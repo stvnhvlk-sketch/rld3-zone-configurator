@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RLD3-Target Zone Configurator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; font: 13px/1.4 system-ui, sans-serif;
+    background: #0e1116; color: #d7dde5;
+  }
+  #side {
+    width: 280px; flex: 0 0 280px; padding: 12px; overflow-y: auto;
+    background: #151a21; border-right: 1px solid #232b36;
+  }
+  #stage { flex: 1; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  h1 { font-size: 14px; margin: 0 0 10px; letter-spacing: .02em; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+       color: #8a97a8; margin: 16px 0 6px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; align-items: center; }
+  button, select, input {
+    background: #1d2530; color: #d7dde5; border: 1px solid #2c3744; border-radius: 6px;
+    padding: 5px 8px; font: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { background: #25303d; }
+  button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+  label { display: flex; align-items: center; gap: 6px; }
+  input[type=number] { width: 80px; }
+  #zones button { flex: 1 1 46%; text-align: left; padding: 5px 7px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  #status, #mqStatus { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
+            background: #11161d; border: 1px solid #232b36; border-radius: 6px; padding: 8px;
+            min-height: 48px; }
+  .ok { color: #4ade80; } .err { color: #fb7185; }
+  #hint { position: absolute; left: 12px; bottom: 10px; color: #8a97a8;
+          background: rgba(14,17,22,.8); padding: 4px 8px; border-radius: 6px; }
+  #coords { position: absolute; right: 12px; top: 10px; color: #cbd5e1;
+            background: rgba(14,17,22,.85); padding: 4px 8px; border-radius: 6px;
+            font-family: ui-monospace, monospace; font-size: 12px; pointer-events: none; }
+  #legend { position: absolute; left: 12px; top: 10px; display: flex; gap: 12px;
+            background: rgba(14,17,22,.85); padding: 4px 8px; border-radius: 6px;
+            font-size: 11px; color: #cbd5e1; pointer-events: none; }
+  #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+              margin-right: 5px; vertical-align: middle; }
+  textarea { width: 100%; height: 90px; background: #11161d; color: #9fe0b0;
+             border: 1px solid #232b36; border-radius: 6px; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>RLD3-Target Zones</h1>
+
+  <h2>Mode</h2>
+  <div class="row" id="modes">
+    <button data-mode="draw" class="on">Draw</button>
+    <button data-mode="edit">Edit</button>
+    <button data-mode="sensor">Sensor</button>
+    <button data-mode="pan">Pan</button>
+  </div>
+  <div class="row">
+    <button id="finish">Finish (Enter)</button>
+    <button id="clearZone">Clear zone</button>
+  </div>
+
+  <h2>Zone</h2>
+  <div class="row" id="zones"></div>
+
+  <h2>Mounting</h2>
+  <div class="row">
+    <label>Yaw °<input type="number" id="yaw" value="0" step="0.1" min="-180" max="180" /></label>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="inverted" /> Inverted (ceiling)</label>
+  </div>
+
+  <h2>Validation</h2>
+  <div id="status">—</div>
+
+  <h2>Layout I/O</h2>
+  <div class="row">
+    <button id="export">Export JSON</button>
+    <button id="import">Import JSON</button>
+    <button id="z2m">Z2M sets</button>
+  </div>
+  <textarea id="io" placeholder="Exported layout / Z2M sets appear here; paste to import."></textarea>
+
+  <h2>Device (live MQTT)</h2>
+  <div class="row">
+    <label>Host<input id="mqHost" value="192.168.0.128" style="width:120px" /></label>
+    <label>Port<input id="mqPort" value="1884" style="width:52px" /></label>
+  </div>
+  <div class="row">
+    <label>User<input id="mqUser" value="Kiosk" style="width:78px" /></label>
+    <label>Pass<input id="mqPass" type="password" style="width:78px" /></label>
+  </div>
+  <div class="row">
+    <label>Device<input id="mqDev" value="RLD3 Test" style="width:130px" /></label>
+  </div>
+  <div class="row">
+    <button id="mqConnect">Connect</button>
+    <button id="mqProvision">Provision to device</button>
+    <button id="mqLive">Live view: OFF</button>
+  </div>
+  <div id="mqStatus">not connected</div>
+</div>
+
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="coords">room —, — mm · sensor —, — mm</div>
+  <div id="legend">
+    <span><i style="background:#7dd3fc"></i>optimal ±45°</span>
+    <span><i style="background:#fbbf24"></i>extended ±60° · reduced</span>
+  </div>
+  <div id="hint"></div>
+</div>
+
+<script type="module">
+import { validatePolygon, DEFAULT_MAX_VERTICES } from '../src/polygon_codec.js';
+import { emptyLayout, layoutToJSON, layoutFromJSON } from '../src/layout.js';
+import { layoutToZ2mSets, createZ2mAdapter } from '../src/z2m_adapter.js';
+import { mqttConnect } from './mqtt_ws.js';
+import { sensorToRoom, roomToSensor } from '../src/geometry.js';
+import {
+  SENSOR_RANGE_R, SENSOR_RANGE_X, SENSOR_CONE_SWEET_DEG, SENSOR_FOV_FULL_DEG,
+  SENSOR_RANGE_CURVE,
+} from '../src/sensor_spec.js';
+import {
+  makeViewport, worldToScreen, screenToWorld, zoomAt, pan, fitBounds, pxToWorld,
+} from './viewport.js';
+import {
+  nearestVertex, nearestEdge, shouldClosePolygon, insertVertexAfter, boundsOf,
+} from './editing.js';
+
+// --- Zone registry: id → label, colour, and accessors into the layout ----------
+// FUTURE: labels are 0-based ("Presence 0") to match the firmware logs, Z2M
+// topics (zone_0_*, poly_pres_0), NVS keys (pres_0), and attribute map during
+// development. When this becomes installer-facing, switch to DISPLAY-ONLY
+// 1-based labels (label = index + 1), ideally showing both (e.g. "Presence 1"
+// + faint "z0"). Do NOT change the wire indices, attribute IDs, or converter
+// keys — presentation only.
+const ZONES = [
+  { id: 'master', label: 'Master', color: '#ffd24a', kind: 'poly' },
+  { id: 'pres0', label: 'Presence 0', color: '#4ade80', kind: 'poly' },
+  { id: 'pres1', label: 'Presence 1', color: '#22d3ee', kind: 'poly' },
+  { id: 'pres2', label: 'Presence 2', color: '#60a5fa', kind: 'poly' },
+  { id: 'pres3', label: 'Presence 3', color: '#a78bfa', kind: 'poly' },
+  { id: 'ez0_in', label: 'EZ0 inner', color: '#fb7185', kind: 'poly' },
+  { id: 'ez0_out', label: 'EZ0 outer', color: '#f43f5e', kind: 'poly' },
+  { id: 'ez1_in', label: 'EZ1 inner', color: '#fda4af', kind: 'poly' },
+  { id: 'ez1_out', label: 'EZ1 outer', color: '#e11d48', kind: 'poly' },
+  { id: 'excl0', label: 'Exclude 0', color: '#94a3b8', kind: 'rect' },
+  { id: 'excl1', label: 'Exclude 1', color: '#cbd5e1', kind: 'rect' },
+  { id: 'excl2', label: 'Exclude 2', color: '#64748b', kind: 'rect' },
+];
+const zoneById = Object.fromEntries(ZONES.map((z) => [z.id, z]));
+
+// LD2450 coverage (SENSOR frame, mm), shown as two nested regions:
+//
+//   SWEET SPOT  — ±45° cone (adaptive_filter.h FILTER_CONE_HALF_ANGLE_DEG),
+//                 clipped to |x| ≤ 3000 (LD2450_parser.c), radial range ≤ 6000.
+//                 What the firmware processes at best accuracy today.
+//   EXTENDED    — the sensor's physical field of view (~±60° per datasheet),
+//                 radial range ≤ 6000. It still detects out here but accuracy
+//                 drops, and the current firmware cone filters it out — using it
+//                 would mean widening FILTER_CONE_HALF_ANGLE_DEG. Drawn so the
+//                 designer knows the reach exists (e.g. for a wall mount).
+//
+// Max range is RADIAL, so the far edge is a 6000 mm-radius arc, not a flat cut.
+// Coverage constants live in src/sensor_spec.js (pinned to firmware by the contract test).
+
+// Arc-topped sector clipped to |x| ≤ X (the firmware sweet spot).
+function clippedSector(coneDeg) {
+  const R = SENSOR_RANGE_R, X = SENSOR_RANGE_X;
+  const coneY = X / Math.tan(coneDeg * Math.PI / 180); // cone edge meets |x|=X
+  const boxArcY = Math.sqrt(R * R - X * X);            // |x|=X meets the arc
+  const aMax = Math.asin(X / R);
+  const pts = [{ x: 0, y: 0 }, { x: -X, y: Math.round(coneY) }, { x: -X, y: Math.round(boxArcY) }];
+  for (let i = 0; i <= 28; i++) {
+    const a = -aMax + (2 * aMax) * (i / 28);
+    pts.push({ x: Math.round(R * Math.sin(a)), y: Math.round(R * Math.cos(a)) });
+  }
+  pts.push({ x: X, y: Math.round(coneY) });
+  return pts;
+}
+
+// Physical tracking envelope (teardrop) sampled from the datasheet range curve.
+function rangeAtAngle(deg) {
+  const a = Math.abs(deg), c = SENSOR_RANGE_CURVE, last = c[c.length - 1];
+  if (a >= last.deg) return last.mm;
+  for (let i = 0; i < c.length - 1; i++) {
+    if (a <= c[i + 1].deg) {
+      const t = (a - c[i].deg) / (c[i + 1].deg - c[i].deg);
+      return c[i].mm + t * (c[i + 1].mm - c[i].mm);
+    }
+  }
+  return c[0].mm;
+}
+function physicalEnvelope() {
+  const pts = [];
+  for (let d = -90; d <= 90; d += 5) {
+    const r = rangeAtAngle(d), a = d * Math.PI / 180;
+    pts.push({ x: Math.round(r * Math.sin(a)), y: Math.round(r * Math.cos(a)) });
+  }
+  return pts;
+}
+
+const SWEET_ENVELOPE = clippedSector(SENSOR_CONE_SWEET_DEG);
+const FULL_ENVELOPE = physicalEnvelope();
+
+// --- App state -----------------------------------------------------------------
+const mount = { yawDeciDeg: 0, inverted: false };
+const sensor = { x: 0, y: 0 };   // sensor position in ABSOLUTE room frame (§11)
+const polys = {};            // id → [{x,y}] ABSOLUTE-frame vertices for poly zones
+const rects = {};            // id → {x1,y1,x2,y2} SENSOR-frame rect for excl zones
+let activeId = 'master';
+let mode = 'draw';
+let draft = [];              // vertices being drawn (poly) or [corner] (rect)
+let selVert = -1;
+let dragging = false;
+let panLast = null;
+let rectDragOrig = null;     // { rect, startSensor } while moving an exclusion body
+let polyDragOrig = null;     // { verts, start } while moving a whole polygon zone
+let sensorPlacing = false;   // dragging the sensor in 'sensor' mode
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let vp = makeViewport({ scale: 0.08, tx: 0, ty: 0 });
+
+function resize() {
+  const r = cv.parentElement.getBoundingClientRect();
+  cv.width = r.width; cv.height = r.height;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+function fitView() {
+  vp = fitBounds({ xmin: -4200, xmax: 4200, ymin: -300, ymax: 8000 },
+    { w: cv.width, h: cv.height }, 30);
+  draw();
+}
+
+// --- Rendering -----------------------------------------------------------------
+function w2s(p) { return worldToScreen(vp, p); }
+
+// §11: sensor/room-frame point <-> ABSOLUTE room coords (placement = translation).
+function sensorToAbs(p) { const r = sensorToRoom(p, mount); return { x: r.x + sensor.x, y: r.y + sensor.y }; }
+function absToSensor(p) { return roomToSensor({ x: p.x - sensor.x, y: p.y - sensor.y }, mount); }
+
+/** The 4 ABSOLUTE-frame corners of a sensor-frame rect (sensor placement applied). */
+function rectRoomCorners(r) {
+  return [
+    { x: r.x1, y: r.y1 }, { x: r.x2, y: r.y1 },
+    { x: r.x2, y: r.y2 }, { x: r.x1, y: r.y2 },
+  ].map(sensorToAbs);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  drawGrid();
+  drawEnvelope();
+  drawSensor();
+  for (const z of ZONES) drawZone(z);
+  drawDraft();
+  drawLiveTargets();
+  drawAxisLegend();
+  refreshStatus();
+  updateHint();
+}
+
+function drawGrid() {
+  const step = 500;
+  const tl = screenToWorld(vp, { sx: 0, sy: 0 });
+  const br = screenToWorld(vp, { sx: cv.width, sy: cv.height });
+  const x0 = Math.floor(tl.x / step) * step, x1 = Math.ceil(br.x / step) * step;
+  const y0 = Math.floor(br.y / step) * step, y1 = Math.ceil(tl.y / step) * step;
+  ctx.lineWidth = 1;
+  for (let x = x0; x <= x1; x += step) {
+    const a = w2s({ x, y: y0 }), b = w2s({ x, y: y1 });
+    ctx.strokeStyle = x === 0 ? '#3b4654' : '#1c232c';
+    ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+  }
+  for (let y = y0; y <= y1; y += step) {
+    const a = w2s({ x: x0, y }), b = w2s({ x: x1, y });
+    ctx.strokeStyle = y === 0 ? '#3b4654' : '#1c232c';
+    ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+  }
+}
+
+// Fixed-screen axis indicator (bottom-right). World is +x right / +y forward
+// (up on screen) and the viewport never rotates, so X always points right and
+// Y always points up — a constant legend, not a transformed one.
+function drawAxisLegend() {
+  const L = 30, ox = cv.width - 56, oy = cv.height - 78;
+  const head = (x, y, ang, col) => {
+    const s = 6;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - s * Math.cos(ang - 0.4), y - s * Math.sin(ang - 0.4));
+    ctx.lineTo(x - s * Math.cos(ang + 0.4), y - s * Math.sin(ang + 0.4));
+    ctx.closePath(); ctx.fill();
+  };
+  ctx.save();
+  ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  const xCol = '#e07a5f', yCol = '#81b29a';
+  // X → right
+  ctx.strokeStyle = xCol;
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + L, oy); ctx.stroke();
+  head(ox + L, oy, 0, xCol);
+  ctx.fillStyle = xCol; ctx.fillText('X', ox + L + 9, oy);
+  // Y → up (screen -y)
+  ctx.strokeStyle = yCol;
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - L); ctx.stroke();
+  head(ox, oy - L, -Math.PI / 2, yCol);
+  ctx.fillStyle = yCol; ctx.fillText('Y', ox, oy - L - 10);
+  ctx.restore();
+}
+
+// Live targets stream in post-mount room frame (sensor at origin), so they
+// plot at sensor position + target — no yaw re-application (the device already
+// applied it). Cyan dots; the empty-slot sentinel arrives as null.
+let liveTargets = [];
+
+// The live stream is recovered from Z2M's read-result log line for the custom
+// cluster — the 12-byte octet is 3 × {int16 x, int16 y} little-endian (mm),
+// with (-32768,-32768) marking an empty slot. Returns the 3-slot array, or null
+// for any log line that isn't a targets read.
+const LIVE_CLUSTER = 0xFDCD, LIVE_ATTR = 0x0013, LIVE_SENTINEL = -32768;
+function parseTargetsFromLog(raw) {
+  let outer; try { outer = JSON.parse(raw); } catch { return null; }
+  const msg = outer && outer.message;
+  if (typeof msg !== 'string') return null;
+  const i = msg.indexOf(`Read result of '${LIVE_CLUSTER}'`);
+  if (i < 0) return null;
+  const brace = msg.indexOf('{', i);
+  if (brace < 0) return null;
+  let res; try { res = JSON.parse(msg.slice(brace)); } catch { return null; }
+  const bytes = res[String(LIVE_ATTR)] && res[String(LIVE_ATTR)].data;
+  if (!Array.isArray(bytes) || bytes.length < 12) return null;
+  const s16 = (lo, hi) => { const v = lo | (hi << 8); return v & 0x8000 ? v - 0x10000 : v; };
+  const t = [];
+  for (let k = 0; k + 4 <= 12; k += 4) {
+    const x = s16(bytes[k], bytes[k + 1]), y = s16(bytes[k + 2], bytes[k + 3]);
+    t.push((x === LIVE_SENTINEL && y === LIVE_SENTINEL) ? null : { x, y });
+  }
+  return t;
+}
+function drawLiveTargets() {
+  for (const t of liveTargets) {
+    if (!t) continue;
+    const s = w2s({ x: sensor.x + t.x, y: sensor.y + t.y });
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#22d3ee'; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = '#0e7490'; ctx.stroke();
+  }
+}
+
+function drawRegion(env, fill, stroke) {
+  const pts = env.map((c) => w2s(sensorToAbs(c)));
+  ctx.beginPath();
+  pts.forEach((s, i) => (i ? ctx.lineTo(s.sx, s.sy) : ctx.moveTo(s.sx, s.sy)));
+  ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.setLineDash([8, 5]);
+  ctx.stroke(); ctx.setLineDash([]);
+}
+
+function drawEnvelope() {
+  // Extended physical FOV first (behind), then the optimal sweet spot on top.
+  drawRegion(FULL_ENVELOPE, 'rgba(251,191,36,0.05)', 'rgba(251,191,36,0.45)');   // amber = degraded
+  drawRegion(SWEET_ENVELOPE, 'rgba(56,189,248,0.07)', 'rgba(125,211,252,0.6)');  // cyan = optimal
+}
+
+function drawSensor() {
+  const o = w2s({ x: sensor.x, y: sensor.y });
+  const tip = w2s(sensorToAbs({ x: 0, y: 1500 }));
+  ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(o.sx, o.sy); ctx.lineTo(tip.sx, tip.sy); ctx.stroke();
+  ctx.fillStyle = mode === 'sensor' ? '#fbbf24' : '#e2e8f0';
+  ctx.beginPath(); ctx.arc(o.sx, o.sy, mode === 'sensor' ? 7 : 5, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawZone(z) {
+  const isActive = z.id === activeId;
+  if (z.kind === 'poly') {
+    const pts = polys[z.id];
+    if (!pts || pts.length === 0) return;
+    drawPoly(pts, z.color, isActive, true);
+    if (isActive && mode === 'edit') drawHandles(pts, z.color);
+  } else {
+    const r = rects[z.id]; // stored in SENSOR frame
+    if (!r) return;
+    // Sensor-frame axis-aligned rect → room-frame quad (rotates/flips with mount).
+    const corners = rectRoomCorners(r);
+    drawPoly(corners, z.color, isActive, true, true);
+    if (isActive && mode === 'edit') drawHandles(corners, z.color);
+  }
+}
+
+function drawPoly(pts, color, active, closed, dashed = false) {
+  ctx.lineWidth = active ? 2.5 : 1.5;
+  ctx.strokeStyle = color;
+  ctx.setLineDash(dashed ? [6, 4] : []);
+  ctx.beginPath();
+  pts.forEach((p, i) => { const s = w2s(p); i ? ctx.lineTo(s.sx, s.sy) : ctx.moveTo(s.sx, s.sy); });
+  if (closed) ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = color + (active ? '22' : '12');
+  ctx.fill();
+}
+
+function drawHandles(pts, color) {
+  pts.forEach((p, i) => {
+    const s = w2s(p);
+    ctx.fillStyle = i === selVert ? '#fff' : color;
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = '#0e1116'; ctx.stroke();
+  });
+}
+
+function drawDraft() {
+  if (draft.length === 0) return;
+  const z = zoneById[activeId];
+  if (z.kind === 'poly') {
+    ctx.strokeStyle = z.color; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    draft.forEach((p, i) => { const s = w2s(p); i ? ctx.lineTo(s.sx, s.sy) : ctx.moveTo(s.sx, s.sy); });
+    ctx.stroke(); ctx.setLineDash([]);
+    draft.forEach((p) => { const s = w2s(p); ctx.fillStyle = z.color;
+      ctx.beginPath(); ctx.arc(s.sx, s.sy, 4, 0, Math.PI * 2); ctx.fill(); });
+  }
+}
+
+// --- Pointer interaction -------------------------------------------------------
+function evWorld(e) {
+  const r = cv.getBoundingClientRect();
+  return screenToWorld(vp, { sx: e.clientX - r.left, sy: e.clientY - r.top });
+}
+function round(p) { return { x: Math.round(p.x), y: Math.round(p.y) }; }
+
+/** Even-odd point-in-polygon for float {x,y} room corners (exclusion body hit). */
+function pointInPoly(pts, p) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if (((a.y > p.y) !== (b.y > p.y)) &&
+        (p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x)) inside = !inside;
+  }
+  return inside;
+}
+
+function updateCoords(e) {
+  const w = evWorld(e);
+  const sf = absToSensor(w);
+  document.getElementById('coords').textContent =
+    `room ${Math.round(w.x)}, ${Math.round(w.y)} mm · sensor ${Math.round(sf.x)}, ${Math.round(sf.y)} mm`;
+}
+
+cv.addEventListener('mousedown', (e) => {
+  const wp = evWorld(e);
+  if (mode === 'pan' || e.button === 1) { panLast = { x: e.clientX, y: e.clientY }; return; }
+  if (mode === 'sensor') {
+    sensor.x = Math.round(wp.x); sensor.y = Math.round(wp.y);
+    sensorPlacing = true; dragging = true; draw(); return;
+  }
+  const z = zoneById[activeId];
+
+  if (mode === 'draw') {
+    if (z.kind === 'poly') {
+      const closeDist = pxToWorld(vp, 10);
+      if (shouldClosePolygon(draft, wp, closeDist)) return finishDraft();
+      if (draft.length < DEFAULT_MAX_VERTICES) draft.push(round(wp));
+      draw();
+    } else { // rect: two room clicks → axis-aligned SENSOR-frame rect (§6)
+      if (draft.length === 0) draft.push(wp);
+      else {
+        const a = absToSensor(draft[0]), b = absToSensor(wp);
+        rects[z.id] = norm(round(a), round(b));
+        draft = []; draw();
+      }
+    }
+    return;
+  }
+
+  if (mode === 'edit' && z.kind === 'poly' && polys[z.id]) {
+    const hit = nearestVertex(polys[z.id], wp, pxToWorld(vp, 8));
+    if (hit >= 0) { selVert = hit; polyDragOrig = null; dragging = true; draw(); return; }
+    const edge = nearestEdge(polys[z.id], wp, pxToWorld(vp, 8));
+    if (edge >= 0 && polys[z.id].length < DEFAULT_MAX_VERTICES) {
+      polys[z.id] = insertVertexAfter(polys[z.id], edge, wp);
+      selVert = edge + 1; polyDragOrig = null; dragging = true; draw(); return;
+    }
+    if (pointInPoly(polys[z.id], wp)) {          // drag interior → move the whole zone
+      polyDragOrig = { verts: polys[z.id].map((v) => ({ ...v })), start: wp };
+      selVert = -1; dragging = true; draw();
+    }
+  }
+
+  if (mode === 'edit' && z.kind === 'rect' && rects[z.id]) {
+    const corners = rectRoomCorners(rects[z.id]);
+    const hit = nearestVertex(corners, wp, pxToWorld(vp, 12));
+    if (hit >= 0) { selVert = hit; rectDragOrig = null; dragging = true; draw(); return; }
+    if (pointInPoly(corners, wp)) {        // grab inside the box → move it
+      selVert = -1; dragging = true;
+      rectDragOrig = { rect: { ...rects[z.id] }, startSensor: absToSensor(wp) };
+      draw();
+    }
+  }
+});
+
+cv.addEventListener('mousemove', (e) => {
+  updateCoords(e);
+  if (panLast) {
+    vp = pan(vp, e.clientX - panLast.x, e.clientY - panLast.y);
+    panLast = { x: e.clientX, y: e.clientY }; draw(); return;
+  }
+  if (!dragging) return;
+  if (sensorPlacing) { const w = evWorld(e); sensor.x = Math.round(w.x); sensor.y = Math.round(w.y); draw(); return; }
+  const kind = zoneById[activeId].kind;
+  if (kind === 'poly' && polys[activeId]) {
+    if (polyDragOrig) {                    // move whole zone: translate all vertices
+      const cur = evWorld(e);
+      const dx = Math.round(cur.x - polyDragOrig.start.x);
+      const dy = Math.round(cur.y - polyDragOrig.start.y);
+      polys[activeId] = polyDragOrig.verts.map((v) => ({ x: v.x + dx, y: v.y + dy }));
+      draw();
+    } else if (selVert >= 0) {
+      polys[activeId][selVert] = round(evWorld(e)); draw();
+    }
+  } else if (kind === 'rect' && rects[activeId]) {
+    const r = rects[activeId];
+    if (rectDragOrig) {                    // move whole box: translate in sensor frame
+      const cur = absToSensor(evWorld(e));
+      const dx = Math.round(cur.x - rectDragOrig.startSensor.x);
+      const dy = Math.round(cur.y - rectDragOrig.startSensor.y);
+      const o = rectDragOrig.rect;
+      rects[activeId] = { x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy };
+      draw();
+    } else if (selVert >= 0) {             // resize: move the two sensor edges at this corner
+      const sp = round(absToSensor(evWorld(e)));
+      if (selVert === 0) { r.x1 = sp.x; r.y1 = sp.y; }
+      else if (selVert === 1) { r.x2 = sp.x; r.y1 = sp.y; }
+      else if (selVert === 2) { r.x2 = sp.x; r.y2 = sp.y; }
+      else { r.x1 = sp.x; r.y2 = sp.y; }
+      draw();
+    }
+  }
+});
+window.addEventListener('mouseup', () => {
+  // Re-order a resized exclusion so x1<x2, y1<y2 (corner may have crossed over).
+  if (dragging && !rectDragOrig && zoneById[activeId] && zoneById[activeId].kind === 'rect' && rects[activeId]) {
+    const r = rects[activeId];
+    rects[activeId] = norm({ x: r.x1, y: r.y1 }, { x: r.x2, y: r.y2 });
+  }
+  dragging = false; panLast = null; rectDragOrig = null; polyDragOrig = null; sensorPlacing = false;
+});
+
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect();
+  vp = zoomAt(vp, e.deltaY < 0 ? 1.1 : 1 / 1.1, { sx: e.clientX - r.left, sy: e.clientY - r.top });
+  draw();
+}, { passive: false });
+
+cv.addEventListener('dblclick', () => { if (mode === 'draw') finishDraft(); });
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'Enter') finishDraft();
+  else if (e.key === 'Escape') { draft = []; draw(); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'edit' && selVert >= 0) {
+    const p = polys[activeId];
+    if (p && p.length > 3) { p.splice(selVert, 1); selVert = -1; draw(); }
+  }
+});
+
+function finishDraft() {
+  const z = zoneById[activeId];
+  if (z.kind === 'poly' && draft.length >= 3) { polys[z.id] = draft.slice(); }
+  draft = []; draw();
+}
+function norm(a, b) {
+  return { x1: Math.min(a.x, b.x), y1: Math.min(a.y, b.y), x2: Math.max(a.x, b.x), y2: Math.max(a.y, b.y) };
+}
+
+// --- Status / validation -------------------------------------------------------
+function refreshStatus() {
+  const z = zoneById[activeId];
+  const s = document.getElementById('status');
+  if (z.kind === 'poly') {
+    const pts = polys[z.id];
+    if (!pts) { s.textContent = `${z.label}: empty`; s.className = ''; return; }
+    const v = validatePolygon(pts, { maxVertices: DEFAULT_MAX_VERTICES });
+    const bb = boundsOf(pts, null);
+    const dims = bb ? ` · ${bb.xmax - bb.xmin}×${bb.ymax - bb.ymin} mm` : '';
+    s.textContent = `${z.label}: ${pts.length} verts${dims}\n` + (v.ok ? 'valid ✓' : v.errors.join('\n'));
+    s.className = v.ok ? 'ok' : 'err';
+  } else {
+    const r = rects[z.id];
+    if (!r) { s.textContent = `${z.label}: empty`; s.className = ''; return; }
+    s.textContent = `${z.label} (sensor frame):\n${r.x1},${r.y1},${r.x2},${r.y2}`
+      + `\n${r.x2 - r.x1}×${r.y2 - r.y1} mm`;
+    s.className = 'ok';
+  }
+}
+function updateHint() {
+  const isRect = zoneById[activeId].kind === 'rect';
+  let h;
+  if (mode === 'draw') {
+    h = isRect ? 'Draw: click two opposite corners to place the exclusion rectangle. Wheel=zoom.'
+               : 'Draw: click to add vertices; click the first point / Enter to close. Wheel=zoom.';
+  } else if (mode === 'edit') {
+    h = isRect ? 'Edit: drag a corner handle to resize, or drag inside the box to move it.'
+               : 'Edit: drag a vertex, drag inside to move the zone, click an edge to add a vertex, Del removes.';
+  } else if (mode === 'sensor') {
+    h = 'Sensor: click or drag to place the sensor; set Yaw / Inverted to aim its field of view.';
+  } else {
+    h = 'Pan: drag to move. Wheel=zoom.';
+  }
+  document.getElementById('hint').textContent = h;
+}
+
+// --- Layout <-> app state ------------------------------------------------------
+function appToLayout() {
+  const L = emptyLayout();
+  L.mount = { ...mount };
+  // §11: polygons are drawn in ABSOLUTE coords; the wire room frame is sensor-at-
+  // origin, so translate by -sensor_position. Exclusions are already sensor-frame.
+  const tr = (verts) => verts.map((v) => ({ x: v.x - sensor.x, y: v.y - sensor.y }));
+  L.master = polys.master ? { vertices: tr(polys.master) } : null;
+  for (let n = 0; n < 4; n++) L.presence[n] = polys['pres' + n] ? { vertices: tr(polys['pres' + n]) } : null;
+  for (let p = 0; p < 2; p++) {
+    const inn = polys[`ez${p}_in`], out = polys[`ez${p}_out`];
+    L.entryExit[p] = (inn || out) ? { inner: inn ? { vertices: tr(inn) } : null, outer: out ? { vertices: tr(out) } : null } : null;
+  }
+  for (let n = 0; n < 3; n++) L.exclusions[n] = rects['excl' + n] ? { ...rects['excl' + n] } : null;
+  return L;
+}
+
+// --- UI wiring -----------------------------------------------------------------
+const zonesEl = document.getElementById('zones');
+ZONES.forEach((z) => {
+  const b = document.createElement('button');
+  b.innerHTML = `<span class="swatch" style="background:${z.color}"></span>${z.label}`;
+  b.onclick = () => { activeId = z.id; draft = []; selVert = -1; syncZoneButtons(); draw(); };
+  b.dataset.zone = z.id; zonesEl.appendChild(b);
+});
+function syncZoneButtons() {
+  [...zonesEl.children].forEach((b) => b.classList.toggle('on', b.dataset.zone === activeId));
+}
+document.getElementById('modes').onclick = (e) => {
+  if (!e.target.dataset.mode) return;
+  mode = e.target.dataset.mode; draft = []; selVert = -1;
+  [...e.currentTarget.children].forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+  cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';
+  draw();
+};
+document.getElementById('finish').onclick = finishDraft;
+document.getElementById('clearZone').onclick = () => {
+  delete polys[activeId]; delete rects[activeId]; draft = []; selVert = -1; draw();
+};
+// Field is in DEGREES (intuitive); the wire attr 0x0100 is 0.1° units, so store deci-degrees.
+document.getElementById('yaw').oninput = (e) => { mount.yawDeciDeg = Math.round((parseFloat(e.target.value) || 0) * 10); draw(); };
+document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
+
+// Tool layout JSON = ABSOLUTE polygons + sensor placement (round-trips for editing).
+// The device-facing wire layout is produced separately by appToLayout() (Z2M sets).
+function toolToJSON() {
+  return JSON.stringify({
+    version: 2, tool: 'rld3-configurator',
+    sensor: { x: sensor.x, y: sensor.y, yawDeciDeg: mount.yawDeciDeg, inverted: mount.inverted },
+    polys, rects,
+  }, null, 2);
+}
+function toolFromJSON(text) {
+  const o = JSON.parse(text);
+  if (o.version !== 2 || !o.sensor) throw new Error('not a v2 tool layout');
+  sensor.x = Math.round(o.sensor.x || 0); sensor.y = Math.round(o.sensor.y || 0);
+  mount.yawDeciDeg = o.sensor.yawDeciDeg || 0; mount.inverted = !!o.sensor.inverted;
+  document.getElementById('yaw').value = mount.yawDeciDeg / 10;
+  document.getElementById('inverted').checked = mount.inverted;
+  for (const k of Object.keys(polys)) delete polys[k];
+  for (const k of Object.keys(rects)) delete rects[k];
+  Object.assign(polys, o.polys || {});
+  Object.assign(rects, o.rects || {});
+  draw();
+}
+
+document.getElementById('export').onclick = () => {
+  document.getElementById('io').value = toolToJSON();
+};
+document.getElementById('z2m').onclick = () => {
+  try { document.getElementById('io').value = JSON.stringify(layoutToZ2mSets(appToLayout()), null, 2); }
+  catch (err) { document.getElementById('io').value = 'ERROR: ' + err.message; }
+};
+document.getElementById('import').onclick = () => {
+  try { toolFromJSON(document.getElementById('io').value); }
+  catch (err) { alert('Import failed: ' + err.message); }
+};
+
+// --- Live device provisioning (MQTT over WebSocket) ----------------------------
+let z2mAdapter = null, z2mClient = null;
+let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null;
+const mqStatus = document.getElementById('mqStatus');
+const setMq = (t, cls) => { mqStatus.textContent = t; mqStatus.className = cls || ''; };
+
+document.getElementById('mqConnect').onclick = async () => {
+  const host = document.getElementById('mqHost').value.trim();
+  const port = document.getElementById('mqPort').value.trim();
+  const user = document.getElementById('mqUser').value;
+  const pass = document.getElementById('mqPass').value;
+  const device = document.getElementById('mqDev').value.trim();
+  setMq(`connecting to ws://${host}:${port} …`);
+  try {
+    if (z2mClient) z2mClient.end();
+    const client = await mqttConnect({ url: `ws://${host}:${port}`, username: user || undefined, password: pass || undefined });
+    const transport = {
+      publish: (t, p) => client.publish(t, p),
+      subscribe: (t, h) => { client.subscribe(t); client.onMessage((tp, m) => { if (tp === t) h(m); }); },
+    };
+    z2mAdapter = createZ2mAdapter({ transport, device });
+    z2mClient = client;
+    liveDevice = device;
+    // Two sources feed this handler (onMessage replaces, it does not stack, so we
+    // dispatch by topic here):
+    //   - the device state topic: live_view confirmation (and targets, if Z2M ever
+    //     publishes them — it does not today, see below).
+    //   - bridge/logging: the live target stream. Z2M's `/get` does not route to
+    //     this converter for the custom cluster, and octet *reporting* crashes the
+    //     device SDK — so we poll via a raw attribute read and recover the result
+    //     from Z2M's read-result log line, which carries the raw octet bytes.
+    client.subscribe(`zigbee2mqtt/${device}`);
+    client.subscribe('zigbee2mqtt/bridge/logging');
+    client.onMessage((tp, m) => {
+      const raw = typeof m === 'string' ? m : new TextDecoder().decode(m);
+      if (tp === 'zigbee2mqtt/bridge/logging') {
+        const t = parseTargetsFromLog(raw);
+        if (t) { liveTargets = t; draw(); }
+        return;
+      }
+      if (tp !== `zigbee2mqtt/${device}`) return;
+      let s; try { s = JSON.parse(raw); } catch { return; }
+      if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
+      if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); }
+    });
+    setMq(`connected · device "${device}"`, 'ok');
+  } catch (e) {
+    z2mAdapter = null;
+    setMq('connect failed: ' + e.message, 'err');
+  }
+};
+
+document.getElementById('mqProvision').onclick = () => {
+  if (!z2mAdapter) { setMq('not connected — hit Connect first', 'err'); return; }
+  try {
+    const n = z2mAdapter.provision(appToLayout());
+    setMq(`provisioned ${n} attribute writes to the device`, 'ok');
+  } catch (e) {
+    setMq('provision failed: ' + e.message, 'err');
+  }
+};
+
+const mqLive = document.getElementById('mqLive');
+function updateLiveBtn() {
+  mqLive.textContent = liveOn ? 'Live view: ON' : 'Live view: OFF';
+  mqLive.style.color = liveOn ? '#22d3ee' : '';
+}
+function setLive(on) {
+  if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
+  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: on ? 'ON' : 'OFF' }));
+  liveOn = on; updateLiveBtn();
+  if (liveKeepAlive) { clearInterval(liveKeepAlive); liveKeepAlive = null; }
+  if (livePoll) { clearInterval(livePoll); livePoll = null; }
+  if (on) {
+    // Re-arm under the device's 15-min auto-off (sliding window).
+    liveKeepAlive = setInterval(() => z2mClient && z2mClient.publish(
+      `zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: 'ON' })), 12 * 60 * 1000);
+    // Poll target positions via a RAW attribute read. Z2M's `/get` path does not
+    // route to this converter's convertGet for the custom cluster, but the generic
+    // read command (publish {read:{cluster,attributes}} to <device>/<ep>/set) does —
+    // the device answers, fromZigbee decodes the octet, and the result is published
+    // back on the device state topic we already subscribe to.
+    livePoll = setInterval(() => {
+      if (!z2mClient) return;
+      z2mClient.publish(`zigbee2mqtt/${liveDevice}/1/set`,
+        JSON.stringify({ read: { cluster: 0xFDCD, attributes: [0x0013] } }));
+    }, 300);
+  } else {
+    liveTargets = []; draw();
+  }
+}
+mqLive.onclick = () => setLive(!liveOn);
+
+// boot
+syncZoneButtons();
+resize();
+fitView();
+</script>
+</body>
+</html>

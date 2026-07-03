@@ -27,12 +27,17 @@
   }
   button { cursor: pointer; }
   button:hover { background: #25303d; }
+  button:disabled { opacity: 0.4; cursor: default; }
   button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
   label { display: flex; align-items: center; gap: 6px; }
   input[type=number] { width: 80px; }
-  #zones button { flex: 1 1 46%; text-align: left; padding: 5px 7px; }
+  #zones { display: flex; flex-direction: column; gap: 12px; }  /* gap = space between categories */
+  .zone-cat { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* Fixed half-column (no grow) so every button is the same size — a lone button
+     (Master, Exclude 3) stays half-width instead of stretching to fill the row. */
+  .zone-cat button { flex: 0 1 calc(50% - 3px); text-align: left; padding: 5px 7px; }
   .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
-  #status, #mqStatus { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
+  #status, #mqStatus, #mqWriteStatus { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
             background: #11161d; border: 1px solid #232b36; border-radius: 6px; padding: 8px;
             min-height: 48px; }
   .ok { color: #4ade80; } .err { color: #fb7185; }
@@ -48,26 +53,56 @@
               margin-right: 5px; vertical-align: middle; }
   textarea { width: 100%; height: 90px; background: #11161d; color: #9fe0b0;
              border: 1px solid #232b36; border-radius: 6px; font-family: ui-monospace, monospace; }
+  .state-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+               margin-left: auto; flex-shrink: 0; }
+  .state-dot[data-s="loaded"]  { background: #4ade80; }
+  .state-dot[data-s="empty"]   { background: transparent; box-shadow: 0 0 0 1.5px #8a97a8; }
+  .state-dot[data-s="invalid"] { background: #fb7185; }
+  .state-dot[data-s="unknown"] { background: #2c3744; }
+  .state-dot[data-s="edited"]  { background: #fbbf24; }
+  .state-dot:not([data-s])     { display: none; }
 </style>
 </head>
 <body>
 <div id="side">
   <h1>RLD3-Target Zones</h1>
 
+  <!-- MQTT broker connection + read. Top-down flow (§13): connect and read FIRST.
+       The section names the broker (host/port/creds); the Sensor field names the
+       target device — matching the Read/Write-from-Sensor button wording. -->
+  <h2>MQTT Server</h2>
+  <div class="row">
+    <label>Host<input id="mqHost" value="homeassistant.local" placeholder="homeassistant.local" style="width:120px" /></label>
+    <label>Port<input id="mqPort" value="1884" style="width:52px" /></label>
+  </div>
+  <div class="row" style="margin-bottom: 12px">
+    <label>User<input id="mqUser" value="" placeholder="mqtt user" style="width:78px" /></label>
+    <label>Pass<input id="mqPass" type="password" style="width:78px" /></label>
+  </div>
+  <div class="row">
+    <label>Sensor<input id="mqDev" value="" placeholder="Z2M friendly name" style="width:130px" /></label>
+  </div>
+  <div class="row">
+    <button id="mqConnect">Connect</button>
+    <button id="mqRead">Read from Sensor</button>
+  </div>
+  <div id="mqStatus">not connected</div>
+
   <h2>Mode</h2>
   <div class="row" id="modes">
-    <button data-mode="draw" class="on">Draw</button>
+    <button data-mode="draw">Draw</button>
     <button data-mode="edit">Edit</button>
-    <button data-mode="sensor">Sensor</button>
-    <button data-mode="pan">Pan</button>
+    <button data-mode="sensor">Place Sensor</button>
+    <button data-mode="pan" class="on">Pan</button>
   </div>
   <div class="row">
     <button id="finish">Finish (Enter)</button>
-    <button id="clearZone">Clear zone</button>
+    <button id="clearZone">Clear drawing</button>
+    <button id="deleteZone">Delete from Sensor</button>
   </div>
 
   <h2>Zone</h2>
-  <div class="row" id="zones"></div>
+  <div id="zones"></div>
 
   <h2>Mounting</h2>
   <div class="row">
@@ -84,28 +119,17 @@
   <div class="row">
     <button id="export">Export JSON</button>
     <button id="import">Import JSON</button>
-    <button id="z2m">Z2M sets</button>
+    <button id="z2m">Preview write commands (debug)</button>
   </div>
   <textarea id="io" placeholder="Exported layout / Z2M sets appear here; paste to import."></textarea>
 
-  <h2>Device (live MQTT)</h2>
+  <!-- Write LAST — provision after editing (read → edit → write, top to bottom). -->
+  <h2>Write to Sensor</h2>
   <div class="row">
-    <label>Host<input id="mqHost" value="192.168.0.128" style="width:120px" /></label>
-    <label>Port<input id="mqPort" value="1884" style="width:52px" /></label>
-  </div>
-  <div class="row">
-    <label>User<input id="mqUser" value="Kiosk" style="width:78px" /></label>
-    <label>Pass<input id="mqPass" type="password" style="width:78px" /></label>
-  </div>
-  <div class="row">
-    <label>Device<input id="mqDev" value="RLD3 Test" style="width:130px" /></label>
-  </div>
-  <div class="row">
-    <button id="mqConnect">Connect</button>
-    <button id="mqProvision">Provision to device</button>
+    <button id="mqProvision">Write to Sensor</button>
     <button id="mqLive">Live view: OFF</button>
   </div>
-  <div id="mqStatus">not connected</div>
+  <div id="mqWriteStatus"></div>
 </div>
 
 <div id="stage">
@@ -121,7 +145,10 @@
 <script type="module">
 import { validatePolygon, DEFAULT_MAX_VERTICES } from '../src/polygon_codec.js';
 import { emptyLayout, layoutToJSON, layoutFromJSON } from '../src/layout.js';
-import { layoutToZ2mSets, createZ2mAdapter } from '../src/z2m_adapter.js';
+import { layoutToZ2mSets, createZ2mAdapter, POLY_KEY, EXCL_KEY } from '../src/z2m_adapter.js';
+import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_load.js';
+import { markProvisioned } from '../src/layout_edit.js';
+import { planFromLayouts, confirmPlan } from '../src/provision_glue.js';
 import { mqttConnect } from './mqtt_ws.js';
 import { sensorToRoom, roomToSensor } from '../src/geometry.js';
 import {
@@ -135,26 +162,27 @@ import {
   nearestVertex, nearestEdge, shouldClosePolygon, insertVertexAfter, boundsOf,
 } from './editing.js';
 
-// --- Zone registry: id → label, colour, and accessors into the layout ----------
-// FUTURE: labels are 0-based ("Presence 0") to match the firmware logs, Z2M
-// topics (zone_0_*, poly_pres_0), NVS keys (pres_0), and attribute map during
-// development. When this becomes installer-facing, switch to DISPLAY-ONLY
-// 1-based labels (label = index + 1), ideally showing both (e.g. "Presence 1"
-// + faint "z0"). Do NOT change the wire indices, attribute IDs, or converter
-// keys — presentation only.
+// --- Zone registry: id → label, colour, category, and accessors into the layout -
+// Labels are DISPLAY-ONLY 1-based (installer-facing): "Presence 1" == wire index 0.
+// The `id` strings (pres0, ez0_in, excl0…) remain 0-based, ZC-internal-only ids —
+// they map through POLY_KEY/EXCL_KEY (z2m_adapter.js) to the 1-based Z2M topics
+// (poly_pres_1, Phase N), and are otherwise unrelated to firmware logs, NVS keys
+// (pres_0), or the attribute map, which all stay 0-based. Never renumber ids —
+// presentation only. `cat` drives the toolbar grouping (blank line between
+// categories; no category headings by request).
 const ZONES = [
-  { id: 'master', label: 'Master', color: '#ffd24a', kind: 'poly' },
-  { id: 'pres0', label: 'Presence 0', color: '#4ade80', kind: 'poly' },
-  { id: 'pres1', label: 'Presence 1', color: '#22d3ee', kind: 'poly' },
-  { id: 'pres2', label: 'Presence 2', color: '#60a5fa', kind: 'poly' },
-  { id: 'pres3', label: 'Presence 3', color: '#a78bfa', kind: 'poly' },
-  { id: 'ez0_in', label: 'EZ0 inner', color: '#fb7185', kind: 'poly' },
-  { id: 'ez0_out', label: 'EZ0 outer', color: '#f43f5e', kind: 'poly' },
-  { id: 'ez1_in', label: 'EZ1 inner', color: '#fda4af', kind: 'poly' },
-  { id: 'ez1_out', label: 'EZ1 outer', color: '#e11d48', kind: 'poly' },
-  { id: 'excl0', label: 'Exclude 0', color: '#94a3b8', kind: 'rect' },
-  { id: 'excl1', label: 'Exclude 1', color: '#cbd5e1', kind: 'rect' },
-  { id: 'excl2', label: 'Exclude 2', color: '#64748b', kind: 'rect' },
+  { id: 'master', label: 'Master', color: '#ffd24a', kind: 'poly', cat: 'master' },
+  { id: 'pres0', label: 'Presence 1', color: '#4ade80', kind: 'poly', cat: 'presence' },
+  { id: 'pres1', label: 'Presence 2', color: '#22d3ee', kind: 'poly', cat: 'presence' },
+  { id: 'pres2', label: 'Presence 3', color: '#60a5fa', kind: 'poly', cat: 'presence' },
+  { id: 'pres3', label: 'Presence 4', color: '#a78bfa', kind: 'poly', cat: 'presence' },
+  { id: 'ez0_in', label: 'EZ1 Inner', color: '#fb7185', kind: 'poly', cat: 'ez' },
+  { id: 'ez0_out', label: 'EZ1 Outer', color: '#f43f5e', kind: 'poly', cat: 'ez' },
+  { id: 'ez1_in', label: 'EZ2 Inner', color: '#fda4af', kind: 'poly', cat: 'ez' },
+  { id: 'ez1_out', label: 'EZ2 Outer', color: '#e11d48', kind: 'poly', cat: 'ez' },
+  { id: 'excl0', label: 'Exclude 1', color: '#94a3b8', kind: 'rect', cat: 'exclude' },
+  { id: 'excl1', label: 'Exclude 2', color: '#cbd5e1', kind: 'rect', cat: 'exclude' },
+  { id: 'excl2', label: 'Exclude 3', color: '#64748b', kind: 'rect', cat: 'exclude' },
 ];
 const zoneById = Object.fromEntries(ZONES.map((z) => [z.id, z]));
 
@@ -217,7 +245,7 @@ const sensor = { x: 0, y: 0 };   // sensor position in ABSOLUTE room frame (§11
 const polys = {};            // id → [{x,y}] ABSOLUTE-frame vertices for poly zones
 const rects = {};            // id → {x1,y1,x2,y2} SENSOR-frame rect for excl zones
 let activeId = 'master';
-let mode = 'draw';
+let mode = 'pan';   // Pan is the safe default — no inadvertent drawing on first click.
 let draft = [];              // vertices being drawn (poly) or [corner] (rect)
 let selVert = -1;
 let dragging = false;
@@ -225,6 +253,16 @@ let panLast = null;
 let rectDragOrig = null;     // { rect, startSensor } while moving an exclusion body
 let polyDragOrig = null;     // { verts, start } while moving a whole polygon zone
 let sensorPlacing = false;   // dragging the sensor in 'sensor' mode
+
+// --- Device read state (A1/A2) -------------------------------------------------
+let deviceReports = {};       // merged JSON from device state topic during a Read
+let loadedZoneStates = null;  // zoneStates returned by the last layoutFromReports
+let deviceBaseline = null;    // deep snapshot of polys at read time (badge dirty-detect)
+let deviceBaselineLayout = null; // the read-back layout (wire frame) — A3 provision baseline
+// C1: set by the provision handler so the following re-read can diff against the write.
+let pendingConfirm = null;    // { plan, writtenLayout } | null
+// D3: set by the delete handler so the following re-read can confirm the zone is EMPTY.
+let pendingDelete = null;     // { zoneId } | null
 
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
@@ -269,6 +307,9 @@ function draw() {
   drawAxisLegend();
   refreshStatus();
   updateHint();
+  updateZoneBadges();
+  updateFinishButton();
+  updateDeleteButton();
 }
 
 function drawGrid() {
@@ -586,6 +627,15 @@ function finishDraft() {
   if (z.kind === 'poly' && draft.length >= 3) { polys[z.id] = draft.slice(); }
   draft = []; draw();
 }
+function updateFinishButton() {
+  document.getElementById('finish').disabled = !(mode === 'draw' && draft.length > 0);
+}
+// Phase D: only meaningful for a zone the device actually reports as LOADED —
+// nothing to delete from an EMPTY/UNKNOWN/INVALID zone (and no connection means
+// no state to check at all).
+function updateDeleteButton() {
+  document.getElementById('deleteZone').disabled = (stateForZoneId(activeId) !== ZONE_STATE.LOADED);
+}
 function norm(a, b) {
   return { x1: Math.min(a.x, b.x), y1: Math.min(a.y, b.y), x2: Math.max(a.x, b.x), y2: Math.max(a.y, b.y) };
 }
@@ -646,14 +696,79 @@ function appToLayout() {
 
 // --- UI wiring -----------------------------------------------------------------
 const zonesEl = document.getElementById('zones');
+let curCat = null, catEl = null;
 ZONES.forEach((z) => {
+  if (z.cat !== curCat) {                 // new category → new group (spaced by CSS gap)
+    curCat = z.cat;
+    catEl = document.createElement('div');
+    catEl.className = 'zone-cat';
+    zonesEl.appendChild(catEl);
+  }
   const b = document.createElement('button');
-  b.innerHTML = `<span class="swatch" style="background:${z.color}"></span>${z.label}`;
+  b.innerHTML = `<span class="swatch" style="background:${z.color}"></span>${z.label}<span class="state-dot" data-zone="${z.id}"></span>`;
   b.onclick = () => { activeId = z.id; draft = []; selVert = -1; syncZoneButtons(); draw(); };
-  b.dataset.zone = z.id; zonesEl.appendChild(b);
+  b.dataset.zone = z.id; catEl.appendChild(b);
 });
 function syncZoneButtons() {
-  [...zonesEl.children].forEach((b) => b.classList.toggle('on', b.dataset.zone === activeId));
+  zonesEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.zone === activeId));
+}
+
+// --- Zone state badges (A2) ----------------------------------------------------
+function stateForZoneId(id) {
+  if (!loadedZoneStates) return null;
+  if (id === 'master') return loadedZoneStates.master;
+  if (id.startsWith('pres')) return loadedZoneStates.presence[parseInt(id.slice(4), 10)];
+  if (id === 'ez0_in') return loadedZoneStates.entryExit[0].inner;
+  if (id === 'ez0_out') return loadedZoneStates.entryExit[0].outer;
+  if (id === 'ez1_in') return loadedZoneStates.entryExit[1].inner;
+  if (id === 'ez1_out') return loadedZoneStates.entryExit[1].outer;
+  if (id.startsWith('excl')) return loadedZoneStates.exclusions[parseInt(id.slice(4), 10)];
+  return ZONE_STATE.UNKNOWN;
+}
+
+/** Map a ZC-internal zone id to its converter property key (Phase D delete). */
+function propKeyForZoneId(id) {
+  if (id === 'master') return POLY_KEY.master;
+  if (id.startsWith('pres')) return POLY_KEY.presence[parseInt(id.slice(4), 10)];
+  if (id === 'ez0_in') return POLY_KEY.ez[0].inner;
+  if (id === 'ez0_out') return POLY_KEY.ez[0].outer;
+  if (id === 'ez1_in') return POLY_KEY.ez[1].inner;
+  if (id === 'ez1_out') return POLY_KEY.ez[1].outer;
+  if (id.startsWith('excl')) return EXCL_KEY[parseInt(id.slice(4), 10)];
+  return null;
+}
+
+function polyDirty(id) {
+  if (!deviceBaseline) return false;
+  const cur = polys[id], base = deviceBaseline[id];
+  if (!cur && !base) return false;
+  if (!cur || !base) return true;
+  if (cur.length !== base.length) return true;
+  return cur.some((v, i) => v.x !== base[i].x || v.y !== base[i].y);
+}
+
+function rectDirty(id) {
+  if (!deviceBaseline) return false;
+  const cur = rects[id], base = deviceBaseline[id];
+  if (!cur && !base) return false;
+  if (!cur || !base) return true;
+  return cur.x1 !== base.x1 || cur.y1 !== base.y1 || cur.x2 !== base.x2 || cur.y2 !== base.y2;
+}
+
+function zoneBadgeState(id) {
+  if (!loadedZoneStates) return null;
+  const z = zoneById[id];
+  if (z.kind === 'poly' && polyDirty(id)) return 'edited';
+  if (z.kind === 'rect' && rectDirty(id)) return 'edited';
+  return stateForZoneId(id);
+}
+
+function updateZoneBadges() {
+  document.querySelectorAll('.state-dot[data-zone]').forEach((dot) => {
+    const s = zoneBadgeState(dot.dataset.zone);
+    if (s) dot.setAttribute('data-s', s);
+    else dot.removeAttribute('data-s');
+  });
 }
 document.getElementById('modes').onclick = (e) => {
   if (!e.target.dataset.mode) return;
@@ -710,6 +825,10 @@ let z2mAdapter = null, z2mClient = null;
 let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null;
 const mqStatus = document.getElementById('mqStatus');
 const setMq = (t, cls) => { mqStatus.textContent = t; mqStatus.className = cls || ''; };
+// Write feedback lives next to the Write button at the bottom (connect/read status
+// stays up top with those controls — feedback is co-located with its action).
+const mqWriteStatus = document.getElementById('mqWriteStatus');
+const setWrite = (t, cls) => { mqWriteStatus.textContent = t; mqWriteStatus.className = cls || ''; };
 
 document.getElementById('mqConnect').onclick = async () => {
   const host = document.getElementById('mqHost').value.trim();
@@ -747,24 +866,185 @@ document.getElementById('mqConnect').onclick = async () => {
       }
       if (tp !== `zigbee2mqtt/${device}`) return;
       let s; try { s = JSON.parse(raw); } catch { return; }
+      Object.assign(deviceReports, s);  // accumulate for Read from device
       if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
       if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); }
     });
-    setMq(`connected · device "${device}"`, 'ok');
+    setMq(`connected · sensor "${device}"`, 'ok');
   } catch (e) {
     z2mAdapter = null;
     setMq('connect failed: ' + e.message, 'err');
   }
 };
 
+// SAFE provision (A3): read-modify-write. Build an edit session from the device
+// baseline layout, apply the operator's current geometry as edits, build the
+// host-tested provision plan (empty-over-real / invalid drafts skipped), confirm,
+// then write one set per frame and re-read to verify. The baseline→session→plan
+// glue is pure and host-tested in src/provision_glue.js.
 document.getElementById('mqProvision').onclick = () => {
-  if (!z2mAdapter) { setMq('not connected — hit Connect first', 'err'); return; }
+  if (!z2mAdapter) { setWrite('not connected — hit Connect first', 'err'); return; }
   try {
-    const n = z2mAdapter.provision(appToLayout());
-    setMq(`provisioned ${n} attribute writes to the device`, 'ok');
+    // Baseline = the last device read (wire frame), or empty if no read yet.
+    const { session, plan } = planFromLayouts(deviceBaselineLayout, appToLayout());
+    if (plan.sets.length === 0) {
+      // A cleared loaded zone is a real change the BULK plan deliberately refuses
+      // to write — a blank is never sent over live device state. Deleting a zone
+      // is a separate, explicit action (Phase D). Say so instead of "no changes".
+      const cleared = plan.skipped.filter((s) => s.reason === 'empty-not-written');
+      let msg, cls = '';
+      if (cleared.length) {
+        msg = `⚠ ${cleared.map((s) => s.zone).join(', ')} cleared here but NOT removed from the sensor.\n`
+            + 'Write to Sensor cannot delete a zone (a blank is never written over real\n'
+            + 'device state). Select the zone and use "Delete from Sensor" instead.';
+        cls = 'err';
+      } else {
+        msg = 'nothing to write — no changes from the device baseline';
+      }
+      if (plan.warnings.length) msg += '\n⚠ ' + plan.warnings.join('\n⚠ ');
+      setWrite(msg, cls);
+      return;
+    }
+
+    // Confirm dialog: WRITE / SKIP(non-trivial) / warnings.
+    const lines = [];
+    for (const s of plan.sets) lines.push(`WRITE  ${s.key}`);
+    for (const s of plan.skipped) if (s.reason !== 'unchanged') lines.push(`SKIP   ${s.zone} (${s.reason})`);
+    for (const w of plan.warnings) lines.push(`⚠ ${w}`);
+    if (!deviceBaselineLayout) lines.push('(no device read this session — baseline treated as empty)');
+    if (!window.confirm(`Write to "${liveDevice}"?\n\n${lines.join('\n')}`)) {
+      setWrite('write cancelled', '');
+      return;
+    }
+
+    const writtenLayout = appToLayout();  // snapshot before any async re-read
+    for (const { key, value } of plan.sets) z2mAdapter.setKey(key, value);
+    markProvisioned(session, plan);
+    pendingConfirm = { plan, writtenLayout };
+    setWrite(`wrote ${plan.sets.length} set(s); re-reading to confirm…`, 'ok');
+    // Re-read after the writes settle (Z2M serializes per device).
+    setTimeout(() => document.getElementById('mqRead').click(), 800);
   } catch (e) {
-    setMq('provision failed: ' + e.message, 'err');
+    setWrite('write failed: ' + e.message, 'err');
   }
+};
+
+// Phase D: explicit per-zone delete. Deliberately OUTSIDE the bulk provision
+// plan — a dedicated, single-zone action, not a side effect of Write to Sensor.
+// Sends an empty value for the active zone's converter key: the converter (D2)
+// turns that into a zero-length octet (polygons) or the LD2450's own "unused"
+// convention "0,0,0,0" (exclusions); the firmware (D1) erases the NVS/LD2450
+// state and refreshes read-back to EMPTY. Re-reads afterward and reports
+// success only once the device itself confirms the zone is gone.
+document.getElementById('deleteZone').onclick = () => {
+  if (!z2mAdapter) { setWrite('not connected — hit Connect first', 'err'); return; }
+  const z = zoneById[activeId];
+  const key = propKeyForZoneId(activeId);
+  if (!key) { setWrite(`cannot delete "${z.label}": no device key for this zone`, 'err'); return; }
+  if (stateForZoneId(activeId) !== ZONE_STATE.LOADED) {
+    setWrite(`${z.label} is not currently loaded on the sensor — nothing to delete`, '');
+    return;
+  }
+  if (!window.confirm(`Delete "${z.label}" from "${liveDevice}"?\n\n`
+      + 'This erases it from the sensor immediately. It is separate from Write to\n'
+      + 'Sensor and is not affected by unsaved edits to other zones.')) {
+    setWrite('delete cancelled', '');
+    return;
+  }
+
+  z2mAdapter.setKey(key, '');
+  pendingDelete = { zoneId: activeId };
+  setWrite(`deleting ${z.label}; re-reading to confirm…`, 'ok');
+  setTimeout(() => document.getElementById('mqRead').click(), 800);
+};
+
+document.getElementById('mqRead').onclick = () => {
+  if (!z2mAdapter) { setMq('not connected — hit Connect first', 'err'); return; }
+  setMq('reading from sensor…');
+  deviceReports = {};
+
+  const allKeys = deviceReadKeys();
+  // Scalars (yaw, inverted) may batch; each polygon/exclusion octet gets its own
+  // read request — batching truncates to 29 B (APDU limit, proven W1).
+  const scalarKeys = allKeys.slice(0, 2);
+  const blobKeys = allKeys.slice(2);
+  z2mAdapter.readKeys(scalarKeys);
+  for (const k of blobKeys) z2mAdapter.readKeys([k]);
+
+  setTimeout(() => {
+    const { layout, zoneStates: states, warnings } = layoutFromReports(deviceReports);
+
+    // Place sensor at origin — device polygons are room-frame at sensor origin → 1:1 absolute.
+    sensor.x = 0; sensor.y = 0;
+
+    // Populate poly zones from the device read.
+    const setOrClear = (id, verts) => { if (verts) polys[id] = verts; else delete polys[id]; };
+    setOrClear('master', layout.master?.vertices);
+    for (let n = 0; n < 4; n++) setOrClear('pres' + n, layout.presence[n]?.vertices);
+    for (let p = 0; p < 2; p++) {
+      setOrClear(`ez${p}_in`, layout.entryExit[p]?.inner?.vertices);
+      setOrClear(`ez${p}_out`, layout.entryExit[p]?.outer?.vertices);
+    }
+    // Populate exclusions (Phase B read-back). Both sides are SENSOR frame — the
+    // mount is applied only at render (rectRoomCorners) — so this is a direct copy.
+    for (let n = 0; n < 3; n++) {
+      const r = layout.exclusions[n];
+      if (r) rects['excl' + n] = { x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 };
+      else delete rects['excl' + n];
+    }
+
+    // Adopt device mount (yaw + inverted) only when the device reported it.
+    if (states.mount === ZONE_STATE.LOADED) {
+      mount.yawDeciDeg = layout.mount.yawDeciDeg;
+      mount.inverted = layout.mount.inverted;
+      document.getElementById('yaw').value = mount.yawDeciDeg / 10;
+      document.getElementById('inverted').checked = mount.inverted;
+    }
+
+    loadedZoneStates = states;
+    // Snapshot current poly vertices + exclusion rects as the baseline for badge
+    // dirty-detection (poly ids and excl ids are disjoint, so one map holds both).
+    deviceBaseline = {};
+    for (const [k, v] of Object.entries(polys)) deviceBaseline[k] = v.map((pt) => ({ x: pt.x, y: pt.y }));
+    for (const [k, r] of Object.entries(rects)) deviceBaseline[k] = { ...r };
+    // Keep the read-back layout (wire frame, sensor-at-origin) as the provision
+    // baseline for A3's safe read-modify-write. LOADED zones only — EMPTY/UNKNOWN/
+    // INVALID stay null so the plan never treats them as real state to protect.
+    // DEEP COPY, not a ref: setOrClear aliased polys[id] to layout.<zone>.vertices,
+    // so an in-place vertex drag/delete would otherwise mutate this baseline in
+    // lockstep — the write diff then sees no change ("nothing to write") and the
+    // edit silently never provisions. Snapshot it independent of the live polys.
+    deviceBaselineLayout = JSON.parse(JSON.stringify(layout));
+
+    const note = warnings.length ? ' · ' + warnings.join('; ') : '';
+    setMq('read complete' + note, warnings.length ? '' : 'ok');
+    draw();
+
+    // C1: if this read was triggered by a provision, diff re-read against the write.
+    if (pendingConfirm) {
+      const { plan: pc, writtenLayout } = pendingConfirm;
+      pendingConfirm = null;
+      const { confirmed, unconfirmed } = confirmPlan(pc, writtenLayout, layout);
+      const lines = confirmed.map((k) => `✓ confirmed: ${k}`);
+      for (const k of unconfirmed) lines.push(`⚠ WRITE NOT CONFIRMED: ${k}`);
+      setWrite(lines.join('\n'), unconfirmed.length > 0 ? 'err' : 'ok');
+    }
+
+    // D3: if this read was triggered by a delete, confirm the zone actually
+    // reads back EMPTY — loud if it doesn't (mirrors C1: report the device's
+    // own truth, never assume the write landed just because it was sent).
+    if (pendingDelete) {
+      const { zoneId } = pendingDelete;
+      pendingDelete = null;
+      const label = zoneById[zoneId].label;
+      const s = stateForZoneId(zoneId);
+      if (s === ZONE_STATE.EMPTY) {
+        setWrite(`✓ deleted: ${label}`, 'ok');
+      } else {
+        setWrite(`⚠ NOT deleted: ${label} (device still reports ${s})`, 'err');
+      }
+    }
+  }, 3000);
 };
 
 const mqLive = document.getElementById('mqLive');
@@ -799,6 +1079,7 @@ function setLive(on) {
 mqLive.onclick = () => setLive(!liveOn);
 
 // boot
+cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';   // match the default mode
 syncZoneButtons();
 resize();
 fitView();

@@ -21,16 +21,24 @@ import { encodePolygon, bytesToHex, DEFAULT_MAX_VERTICES } from './polygon_codec
 import { validateLayout } from './layout.js';
 import { PRESENCE_ZONE_COUNT } from './attributes.js';
 
-/** Converter property keys (mirror RLD3Target.mjs POLY_KEY_TO_ATTR / EXCL_KEY_TO_IDX). */
-const POLY_KEY = {
+/*
+ * Converter property keys (mirror RLD3Target.mjs POLY_KEY_TO_ATTR / EXCL_KEY_TO_IDX).
+ * Key STRINGS are 1-based (Phase N, 3T-zone-configurator.md §14) — installers never
+ * see a "zone 0". Array/object INDICES here stay 0-based internals (presence[0] is
+ * the first zone, ez[0] is the first pair) — only the string value each index maps
+ * to has shifted by one. Everything downstream imports these constants, so no other
+ * file needs to know the key text changed.
+ */
+export const POLY_KEY = {
   master: 'poly_master',
-  presence: ['poly_pres_0', 'poly_pres_1', 'poly_pres_2', 'poly_pres_3'],
+  presence: ['poly_pres_1', 'poly_pres_2', 'poly_pres_3', 'poly_pres_4'],
   ez: [
-    { inner: 'poly_ez0_in', outer: 'poly_ez0_out' },
     { inner: 'poly_ez1_in', outer: 'poly_ez1_out' },
+    { inner: 'poly_ez2_in', outer: 'poly_ez2_out' },
   ],
 };
-const EXCL_KEY = ['excl_zone_0', 'excl_zone_1', 'excl_zone_2'];
+export const EXCL_KEY = ['excl_zone_1', 'excl_zone_2', 'excl_zone_3'];
+export const MOUNT_KEY = { yaw: 'yaw_tenths', inverted: 'inverted' };
 
 /**
  * Project a layout to the ordered list of Z2M converter {key, value} sets.
@@ -45,8 +53,8 @@ export function layoutToZ2mSets(layout, { maxVertices = DEFAULT_MAX_VERTICES } =
   const polyHex = (vertices) => bytesToHex(encodePolygon(vertices, { maxVertices }));
   const addPoly = (key, p) => { if (p != null) sets.push({ key, value: polyHex(p.vertices) }); };
 
-  sets.push({ key: 'yaw_tenths', value: layout.mount.yawDeciDeg });
-  sets.push({ key: 'inverted', value: !!layout.mount.inverted });
+  sets.push({ key: MOUNT_KEY.yaw, value: layout.mount.yawDeciDeg });
+  sets.push({ key: MOUNT_KEY.inverted, value: !!layout.mount.inverted });
 
   addPoly(POLY_KEY.master, layout.master);
   for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) addPoly(POLY_KEY.presence[n], layout.presence?.[n]);

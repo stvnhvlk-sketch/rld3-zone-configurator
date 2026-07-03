@@ -16,7 +16,8 @@ export const ATTR_POLY_MAX_VERTICES = 0x0005; // u8 — read this; do not hardco
 export const ATTR_YAW_TENTHS = 0x0100; // int16, 0.1° units
 export const ATTR_INVERTED = 0x0101; // bool
 
-/* Zone polygon provisioning (write-only today; read-back is a planned change) */
+/* Zone polygon provisioning. Read-back works (firmware W1); these are RW —
+ * the configurator loads device geometry via device_load.layoutFromReports. */
 export const ATTR_POLY_MASTER = 0x0200;
 export const ATTR_POLY_PRES = [0x0201, 0x0202, 0x0203, 0x0204];
 export const ATTR_POLY_EZ = [

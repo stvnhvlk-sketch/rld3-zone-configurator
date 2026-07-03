@@ -3,14 +3,15 @@
  *
  * The firmware-derived values are pinned to the C headers by
  * test/contract.test.js so the coverage overlay can't drift from the firmware.
- * SENSOR_FOV_FULL_DEG is a datasheet figure (not a firmware constant) — adjust
- * if the real part differs.
+ * Both cone angles ARE firmware constants and map to DIFFERENT ones:
+ * SENSOR_CONE_SWEET_DEG → FILTER_KNEE_ANGLE_DEG (optimal zone) and
+ * SENSOR_FOV_FULL_DEG → FILTER_CONE_HALF_ANGLE_DEG (outer operating cone).
  */
 
 export const SENSOR_RANGE_R = 6000;       // max radial range (mm) — datasheet 6 m, == LD2450_parser.c y bound
 export const SENSOR_RANGE_X = 3000;       // lateral clip (mm) — LD2450_parser.c x bound
-export const SENSOR_CONE_SWEET_DEG = 45;  // adaptive_filter.h FILTER_CONE_HALF_ANGLE_DEG (optimal cone)
-export const SENSOR_FOV_FULL_DEG = 60;    // effective physical FOV (~±60°); range collapses beyond
+export const SENSOR_CONE_SWEET_DEG = 45;  // adaptive_filter.h FILTER_KNEE_ANGLE_DEG (optimal/sweet-spot cone)
+export const SENSOR_FOV_FULL_DEG = 60;    // adaptive_filter.h FILTER_CONE_HALF_ANGLE_DEG (outer cone; ~±60° FOV)
 
 // Physical tracking range vs angle, digitized from the LD2450 datasheet Fig 7
 // (wall mount, 1.5 m height). Angle from boresight (deg) → max range (mm).

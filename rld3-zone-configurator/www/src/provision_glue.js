@@ -51,7 +51,8 @@ export function sessionFromLayouts(base, cur, opts = {}) {
 
   const polyMap = [
     ['master', cur.master, b.master],
-    ...[0, 1, 2, 3].map((n) => [`presence${n}`, cur.presence[n], b.presence[n]]),
+    ...Array.from({ length: PRESENCE_ZONE_COUNT }, (_, n) =>
+      [`presence${n}`, cur.presence[n], b.presence[n]]),   // V2.1 Delta B (was [0,1,2,3])
     ['ez0_in', cur.entryExit[0]?.inner ?? null, b.entryExit[0]?.inner ?? null],
     ['ez0_out', cur.entryExit[0]?.outer ?? null, b.entryExit[0]?.outer ?? null],
     ['ez1_in', cur.entryExit[1]?.inner ?? null, b.entryExit[1]?.inner ?? null],

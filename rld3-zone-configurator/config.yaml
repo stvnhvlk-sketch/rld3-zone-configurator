@@ -1,5 +1,5 @@
 name: RLD3 Zone Configurator
-version: "0.2.0"
+version: "0.3.0"
 slug: rld3_zone_configurator
 description: >-
   Visual zone configurator for the RLD3-Target mmWave presence sensor —

@@ -176,6 +176,10 @@ const ZONES = [
   { id: 'pres1', label: 'Presence 2', color: '#22d3ee', kind: 'poly', cat: 'presence' },
   { id: 'pres2', label: 'Presence 3', color: '#60a5fa', kind: 'poly', cat: 'presence' },
   { id: 'pres3', label: 'Presence 4', color: '#a78bfa', kind: 'poly', cat: 'presence' },
+  { id: 'pres4', label: 'Presence 5', color: '#f472b6', kind: 'poly', cat: 'presence' },   // V2.1 Delta B
+  { id: 'pres5', label: 'Presence 6', color: '#fbbf24', kind: 'poly', cat: 'presence' },
+  { id: 'pres6', label: 'Presence 7', color: '#fb923c', kind: 'poly', cat: 'presence' },
+  { id: 'pres7', label: 'Presence 8', color: '#34d399', kind: 'poly', cat: 'presence' },
   { id: 'ez0_in', label: 'EZ1 Inner', color: '#fb7185', kind: 'poly', cat: 'ez' },
   { id: 'ez0_out', label: 'EZ1 Outer', color: '#f43f5e', kind: 'poly', cat: 'ez' },
   { id: 'ez1_in', label: 'EZ2 Inner', color: '#fda4af', kind: 'poly', cat: 'ez' },
@@ -685,7 +689,7 @@ function appToLayout() {
   // origin, so translate by -sensor_position. Exclusions are already sensor-frame.
   const tr = (verts) => verts.map((v) => ({ x: v.x - sensor.x, y: v.y - sensor.y }));
   L.master = polys.master ? { vertices: tr(polys.master) } : null;
-  for (let n = 0; n < 4; n++) L.presence[n] = polys['pres' + n] ? { vertices: tr(polys['pres' + n]) } : null;
+  for (let n = 0; n < 8; n++) L.presence[n] = polys['pres' + n] ? { vertices: tr(polys['pres' + n]) } : null;   // V2.1 Delta B
   for (let p = 0; p < 2; p++) {
     const inn = polys[`ez${p}_in`], out = polys[`ez${p}_out`];
     L.entryExit[p] = (inn || out) ? { inner: inn ? { vertices: tr(inn) } : null, outer: out ? { vertices: tr(out) } : null } : null;
@@ -980,7 +984,7 @@ document.getElementById('mqRead').onclick = () => {
     // Populate poly zones from the device read.
     const setOrClear = (id, verts) => { if (verts) polys[id] = verts; else delete polys[id]; };
     setOrClear('master', layout.master?.vertices);
-    for (let n = 0; n < 4; n++) setOrClear('pres' + n, layout.presence[n]?.vertices);
+    for (let n = 0; n < 8; n++) setOrClear('pres' + n, layout.presence[n]?.vertices);   // V2.1 Delta B
     for (let p = 0; p < 2; p++) {
       setOrClear(`ez${p}_in`, layout.entryExit[p]?.inner?.vertices);
       setOrClear(`ez${p}_out`, layout.entryExit[p]?.outer?.vertices);

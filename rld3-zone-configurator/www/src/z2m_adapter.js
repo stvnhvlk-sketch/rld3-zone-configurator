@@ -31,7 +31,8 @@ import { PRESENCE_ZONE_COUNT } from './attributes.js';
  */
 export const POLY_KEY = {
   master: 'poly_master',
-  presence: ['poly_pres_1', 'poly_pres_2', 'poly_pres_3', 'poly_pres_4'],
+  presence: ['poly_pres_1', 'poly_pres_2', 'poly_pres_3', 'poly_pres_4',
+             'poly_pres_5', 'poly_pres_6', 'poly_pres_7', 'poly_pres_8'],   // V2.1 Delta B
   ez: [
     { inner: 'poly_ez1_in', outer: 'poly_ez1_out' },
     { inner: 'poly_ez2_in', outer: 'poly_ez2_out' },

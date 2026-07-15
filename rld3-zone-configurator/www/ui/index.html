@@ -1073,8 +1073,7 @@ function setLive(on) {
     // back on the device state topic we already subscribe to.
     livePoll = setInterval(() => {
       if (!z2mClient) return;
-      z2mClient.publish(`zigbee2mqtt/${liveDevice}/1/set`,
-        JSON.stringify({ read: { cluster: 0xFDCD, attributes: [0x0013] } }));
+      z2mClient.publish(`zigbee2mqtt/${liveDevice}/get`, JSON.stringify({ targets: '' }));
     }, 300);
   } else {
     liveTargets = []; draw();

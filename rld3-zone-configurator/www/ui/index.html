@@ -171,7 +171,7 @@ import {
 // presentation only. `cat` drives the toolbar grouping (blank line between
 // categories; no category headings by request).
 const ZONES = [
-  { id: 'master', label: 'Master', color: '#ffd24a', kind: 'poly', cat: 'master' },
+  { id: 'master', label: 'Room', color: '#ffd24a', kind: 'poly', cat: 'master' },
   { id: 'pres0', label: 'Presence 1', color: '#4ade80', kind: 'poly', cat: 'presence' },
   { id: 'pres1', label: 'Presence 2', color: '#22d3ee', kind: 'poly', cat: 'presence' },
   { id: 'pres2', label: 'Presence 3', color: '#60a5fa', kind: 'poly', cat: 'presence' },
@@ -826,7 +826,11 @@ document.getElementById('import').onclick = () => {
 
 // --- Live device provisioning (MQTT over WebSocket) ----------------------------
 let z2mAdapter = null, z2mClient = null;
-let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null;
+let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null, liveAutoOff = null;
+// Auto-off is a safety stop, not a UX limit: if the user forgets Live view on, it
+// otherwise polls `/get` every 300ms forever, spamming the MQTT bus. 30 min is far
+// longer than any real config session, so it never interrupts legitimate use.
+const LIVE_AUTOOFF_MS = 30 * 60 * 1000;
 const mqStatus = document.getElementById('mqStatus');
 const setMq = (t, cls) => { mqStatus.textContent = t; mqStatus.className = cls || ''; };
 // Write feedback lives next to the Write button at the bottom (connect/read status
@@ -1024,6 +1028,10 @@ document.getElementById('mqRead').onclick = () => {
     setMq('read complete' + note, warnings.length ? '' : 'ok');
     draw();
 
+    // Live view follows a read (which Connect also triggers) — the user gets the
+    // moving-target overlay without a separate toggle. setLive re-arms idempotently.
+    setLive(true);
+
     // C1: if this read was triggered by a provision, diff re-read against the write.
     if (pendingConfirm) {
       const { plan: pc, writtenLayout } = pendingConfirm;
@@ -1062,7 +1070,13 @@ function setLive(on) {
   liveOn = on; updateLiveBtn();
   if (liveKeepAlive) { clearInterval(liveKeepAlive); liveKeepAlive = null; }
   if (livePoll) { clearInterval(livePoll); livePoll = null; }
+  if (liveAutoOff) { clearTimeout(liveAutoOff); liveAutoOff = null; }
   if (on) {
+    // Safety stop — quiet the bus if Live view is left running unattended.
+    liveAutoOff = setTimeout(() => {
+      setLive(false);
+      setMq('live view auto-off (30 min) — bus cleared', '');
+    }, LIVE_AUTOOFF_MS);
     // Re-arm under the device's 15-min auto-off (sliding window).
     liveKeepAlive = setInterval(() => z2mClient && z2mClient.publish(
       `zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: 'ON' })), 12 * 60 * 1000);

@@ -37,9 +37,11 @@
      (Master, Exclude 3) stays half-width instead of stretching to fill the row. */
   .zone-cat button { flex: 0 1 calc(50% - 3px); text-align: left; padding: 5px 7px; }
   .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
-  #status, #mqStatus, #mqWriteStatus { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
+  #status, #mqStatus { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
             background: #11161d; border: 1px solid #232b36; border-radius: 6px; padding: 8px;
             min-height: 48px; }
+  /* Separates the Device (connection) group from the Edit (layout) group below. */
+  .group-sep { border: none; border-top: 1px solid #2c3744; margin: 16px 0 4px; }
   .ok { color: #4ade80; } .err { color: #fb7185; }
   #hint { position: absolute; left: 12px; bottom: 10px; color: #8a97a8;
           background: rgba(14,17,22,.8); padding: 4px 8px; border-radius: 6px; }
@@ -79,14 +81,24 @@
     <label>User<input id="mqUser" value="" placeholder="mqtt user" style="width:78px" /></label>
     <label>Pass<input id="mqPass" type="password" style="width:78px" /></label>
   </div>
+  <!-- Connect sits with the Sensor it targets; the remaining device commands form
+       the group below, all reporting to the one shared message window. Top-down:
+       connect → read/write → delete → monitor. Delete is a device op, not an edit. -->
   <div class="row">
     <label>Sensor<input id="mqDev" value="" placeholder="Z2M friendly name" style="width:130px" /></label>
+    <button id="mqConnect">Connect</button>
   </div>
   <div class="row">
-    <button id="mqConnect">Connect</button>
     <button id="mqRead">Read from Sensor</button>
+    <button id="mqProvision">Write to Sensor</button>
+  </div>
+  <div class="row">
+    <button id="deleteZone">Delete from Sensor</button>
+    <button id="mqLive">Live view: OFF</button>
   </div>
   <div id="mqStatus">not connected</div>
+
+  <hr class="group-sep" />
 
   <h2>Mode</h2>
   <div class="row" id="modes">
@@ -98,7 +110,6 @@
   <div class="row">
     <button id="finish">Finish (Enter)</button>
     <button id="clearZone">Clear drawing</button>
-    <button id="deleteZone">Delete from Sensor</button>
   </div>
 
   <h2>Zone</h2>
@@ -122,14 +133,6 @@
     <button id="z2m">Preview write commands (debug)</button>
   </div>
   <textarea id="io" placeholder="Exported layout / Z2M sets appear here; paste to import."></textarea>
-
-  <!-- Write LAST — provision after editing (read → edit → write, top to bottom). -->
-  <h2>Write to Sensor</h2>
-  <div class="row">
-    <button id="mqProvision">Write to Sensor</button>
-    <button id="mqLive">Live view: OFF</button>
-  </div>
-  <div id="mqWriteStatus"></div>
 </div>
 
 <div id="stage">
@@ -372,30 +375,8 @@ function drawAxisLegend() {
 // applied it). Cyan dots; the empty-slot sentinel arrives as null.
 let liveTargets = [];
 
-// The live stream is recovered from Z2M's read-result log line for the custom
-// cluster — the 12-byte octet is 3 × {int16 x, int16 y} little-endian (mm),
-// with (-32768,-32768) marking an empty slot. Returns the 3-slot array, or null
-// for any log line that isn't a targets read.
-const LIVE_CLUSTER = 0xFDCD, LIVE_ATTR = 0x0013, LIVE_SENTINEL = -32768;
-function parseTargetsFromLog(raw) {
-  let outer; try { outer = JSON.parse(raw); } catch { return null; }
-  const msg = outer && outer.message;
-  if (typeof msg !== 'string') return null;
-  const i = msg.indexOf(`Read result of '${LIVE_CLUSTER}'`);
-  if (i < 0) return null;
-  const brace = msg.indexOf('{', i);
-  if (brace < 0) return null;
-  let res; try { res = JSON.parse(msg.slice(brace)); } catch { return null; }
-  const bytes = res[String(LIVE_ATTR)] && res[String(LIVE_ATTR)].data;
-  if (!Array.isArray(bytes) || bytes.length < 12) return null;
-  const s16 = (lo, hi) => { const v = lo | (hi << 8); return v & 0x8000 ? v - 0x10000 : v; };
-  const t = [];
-  for (let k = 0; k + 4 <= 12; k += 4) {
-    const x = s16(bytes[k], bytes[k + 1]), y = s16(bytes[k + 2], bytes[k + 3]);
-    t.push((x === LIVE_SENTINEL && y === LIVE_SENTINEL) ? null : { x, y });
-  }
-  return t;
-}
+// liveTargets is the converter-decoded `targets` array from the device state
+// topic: 3 slots of { x, y } mm in the post-mount room frame, empty slots null.
 function drawLiveTargets() {
   for (const t of liveTargets) {
     if (!t) continue;
@@ -833,10 +814,9 @@ let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null, live
 const LIVE_AUTOOFF_MS = 30 * 60 * 1000;
 const mqStatus = document.getElementById('mqStatus');
 const setMq = (t, cls) => { mqStatus.textContent = t; mqStatus.className = cls || ''; };
-// Write feedback lives next to the Write button at the bottom (connect/read status
-// stays up top with those controls — feedback is co-located with its action).
-const mqWriteStatus = document.getElementById('mqWriteStatus');
-const setWrite = (t, cls) => { mqWriteStatus.textContent = t; mqWriteStatus.className = cls || ''; };
+// One shared message window: connect, read, write, delete and live-view feedback
+// all report here, directly under the Device command group that produces them.
+const setWrite = setMq;
 
 document.getElementById('mqConnect').onclick = async () => {
   const host = document.getElementById('mqHost').value.trim();
@@ -855,23 +835,13 @@ document.getElementById('mqConnect').onclick = async () => {
     z2mAdapter = createZ2mAdapter({ transport, device });
     z2mClient = client;
     liveDevice = device;
-    // Two sources feed this handler (onMessage replaces, it does not stack, so we
-    // dispatch by topic here):
-    //   - the device state topic: live_view confirmation (and targets, if Z2M ever
-    //     publishes them — it does not today, see below).
-    //   - bridge/logging: the live target stream. Z2M's `/get` does not route to
-    //     this converter for the custom cluster, and octet *reporting* crashes the
-    //     device SDK — so we poll via a raw attribute read and recover the result
-    //     from Z2M's read-result log line, which carries the raw octet bytes.
+    // The device state topic carries live_view confirmation and the polled `targets`
+    // stream: setLive() polls `<device>/get {targets:''}`, the converter reads the
+    // octet from cluster 0xFDCD and republishes it here as `targets`. (Octet
+    // *reporting* crashes the device SDK, so it is a poll, not a report.)
     client.subscribe(`zigbee2mqtt/${device}`);
-    client.subscribe('zigbee2mqtt/bridge/logging');
     client.onMessage((tp, m) => {
       const raw = typeof m === 'string' ? m : new TextDecoder().decode(m);
-      if (tp === 'zigbee2mqtt/bridge/logging') {
-        const t = parseTargetsFromLog(raw);
-        if (t) { liveTargets = t; draw(); }
-        return;
-      }
       if (tp !== `zigbee2mqtt/${device}`) return;
       let s; try { s = JSON.parse(raw); } catch { return; }
       Object.assign(deviceReports, s);  // accumulate for Read from device
@@ -1080,11 +1050,12 @@ function setLive(on) {
     // Re-arm under the device's 15-min auto-off (sliding window).
     liveKeepAlive = setInterval(() => z2mClient && z2mClient.publish(
       `zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: 'ON' })), 12 * 60 * 1000);
-    // Poll target positions via a RAW attribute read. Z2M's `/get` path does not
-    // route to this converter's convertGet for the custom cluster, but the generic
-    // read command (publish {read:{cluster,attributes}} to <device>/<ep>/set) does —
-    // the device answers, fromZigbee decodes the octet, and the result is published
-    // back on the device state topic we already subscribe to.
+    // Poll target positions through the converter's `targets` read key. It maps to
+    // ep1.read(0xFDCD, [0x0013]) — the same numeric custom-cluster read the converter
+    // uses for every other attribute, so it frames correctly and the device answers;
+    // fromZigbee decodes the octet and publishes `targets` on the device state topic
+    // (handled above). The generic `{read:{cluster,attributes}}` command frames the
+    // custom cluster manufacturer-specific and the device rejects it UNSUPPORTED_CLUSTER.
     livePoll = setInterval(() => {
       if (!z2mClient) return;
       z2mClient.publish(`zigbee2mqtt/${liveDevice}/get`, JSON.stringify({ targets: '' }));

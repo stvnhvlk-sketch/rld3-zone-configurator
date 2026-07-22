@@ -123,6 +123,24 @@
     <label><input type="checkbox" id="inverted" /> Inverted (ceiling)</label>
   </div>
 
+  <!-- Pan Align (motorized yaw) — increment 1: manual jog + position readout.
+       Full angle-null alignment (landmark/error/auto-approach) is increment 2.
+       See _Documentation/pan-align-design.md. -->
+  <h2>Pan Align</h2>
+  <div class="row">
+    <button id="panCCWc" title="CCW coarse (map view)">◄◄</button>
+    <button id="panCCWf" title="CCW fine">◄</button>
+    <button id="panCWf"  title="CW fine">►</button>
+    <button id="panCWc"  title="CW coarse">►►</button>
+    <button id="panStop" title="Stop" style="color:#fb7185">■</button>
+  </div>
+  <div class="row" style="gap:10px; align-items:center">
+    <label>Coarse<input type="number" id="panCoarse" value="64" min="1" max="512" style="width:60px" /></label>
+    <label>Fine<input type="number" id="panFine" value="8" min="1" max="128" style="width:52px" /></label>
+    <span style="color:#8a97a8; font-size:11px">steps · 0.088°/step</span>
+  </div>
+  <div id="panStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">pan: — steps (—°)</div>
+
   <h2>Validation</h2>
   <div id="status">—</div>
 
@@ -847,6 +865,8 @@ document.getElementById('mqConnect').onclick = async () => {
       Object.assign(deviceReports, s);  // accumulate for Read from device
       if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
       if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); }
+      if (s.pan_position !== undefined) { panPosition = s.pan_position; panUpdateReadout(); }
+      if (s.pan_limit !== undefined) { panLimit = s.pan_limit; panUpdateReadout(); }
     });
     setMq(`connected · sensor "${device}"`, 'ok');
   } catch (e) {
@@ -1065,6 +1085,49 @@ function setLive(on) {
   }
 }
 mqLive.onclick = () => setLive(!liveOn);
+
+/* ==== Pan Align — increment 1: motor jog + position readout =====================
+ * ZC → ESP32 (over the converter, MQTT):
+ *   zigbee2mqtt/<dev>/set  {"pan_jog": <signed int half-steps>}   + = CW, − = CCW (map view, from above)
+ *   zigbee2mqtt/<dev>/set  {"pan_stop": true}
+ * ESP32 → ZC (device state topic / /get):
+ *   pan_position — signed half-steps from home ·  pan_limit — max ± travel (soft limit)
+ *   ~0.088°/half-step (28BYJ-48 half-step, ~4096/rev).
+ * Firmware side NOT yet implemented — jogs publish but the device won't move yet.
+ * Backlash (pan-align-design §4): moves are monotonic; the firmware never auto-reverses
+ * within a jog, and this UI clamps a jog to remaining travel so a tap can't overshoot. */
+const PAN_DEG_PER_STEP = 360 / 4096;
+// Defaults until the device reports: assume home@0; ±90° travel ≈ ±1024 half-steps
+// (pan-align-design §Open-decisions, resolved 2026-07-18). Device pan_limit overrides.
+let panPosition = 0, panLimit = 1024;
+function panUpdateReadout() {
+  const el = document.getElementById('panStatus');
+  if (!el) return;
+  if (panPosition == null) { el.textContent = 'pan: — steps (—°)'; return; }
+  const deg = (panPosition * PAN_DEG_PER_STEP).toFixed(1);
+  el.textContent = `pan: ${panPosition} steps (${deg}°)` + (panLimit != null ? `  · limit ±${panLimit}` : '');
+}
+function panJog(steps) {
+  if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
+  if (panLimit != null && panPosition != null) {   // clamp to remaining travel (never overshoot the soft limit)
+    const cap = steps > 0 ? (panLimit - panPosition) : (-panLimit - panPosition);
+    if (Math.sign(cap) !== Math.sign(steps) || Math.abs(cap) < Math.abs(steps)) steps = cap;
+    if (!steps) { setMq('pan: at soft limit', ''); return; }
+  }
+  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_jog: steps }));
+}
+function panStop() {
+  if (z2mClient && liveDevice) z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_stop: true }));
+}
+{
+  const coarse = () => parseInt(document.getElementById('panCoarse').value, 10) || 64;
+  const fine   = () => parseInt(document.getElementById('panFine').value, 10) || 8;
+  document.getElementById('panCCWc').onclick = () => panJog(-coarse());
+  document.getElementById('panCCWf').onclick = () => panJog(-fine());
+  document.getElementById('panCWf').onclick  = () => panJog(+fine());
+  document.getElementById('panCWc').onclick  = () => panJog(+coarse());
+  document.getElementById('panStop').onclick = panStop;
+}
 
 // boot
 cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';   // match the default mode

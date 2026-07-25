@@ -135,11 +135,11 @@
     <button id="panStop" title="Stop" style="color:#fb7185">■</button>
   </div>
   <div class="row" style="gap:10px; align-items:center">
-    <label>Coarse<input type="number" id="panCoarse" value="64" min="1" max="512" style="width:60px" /></label>
-    <label>Fine<input type="number" id="panFine" value="8" min="1" max="128" style="width:52px" /></label>
-    <span style="color:#8a97a8; font-size:11px">steps · 0.088°/step</span>
+    <label>Coarse<input type="number" id="panCoarse" value="512" min="1" max="512" style="width:60px" /><span id="panCoarseDeg" style="color:#8a97a8; font-size:11px"></span></label>
+    <label>Fine<input type="number" id="panFine" value="64" min="1" max="128" style="width:52px" /><span id="panFineDeg" style="color:#8a97a8; font-size:11px"></span></label>
+    <span style="color:#8a97a8; font-size:11px">steps · 0.088°/step · jog cap 45°</span>
   </div>
-  <div id="panStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">pan: — steps (—°)</div>
+  <div id="panStatus" title="Radar read of the target position (room frame). Stand at a known spot and jog until this matches where you are." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">target: — (live view off)</div>
 
   <h2>Validation</h2>
   <div id="status">—</div>
@@ -864,9 +864,7 @@ document.getElementById('mqConnect').onclick = async () => {
       let s; try { s = JSON.parse(raw); } catch { return; }
       Object.assign(deviceReports, s);  // accumulate for Read from device
       if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
-      if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); }
-      if (s.pan_position !== undefined) { panPosition = s.pan_position; panUpdateReadout(); }
-      if (s.pan_limit !== undefined) { panLimit = s.pan_limit; panUpdateReadout(); }
+      if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); panUpdateReadout(); }
     });
     setMq(`connected · sensor "${device}"`, 'ok');
   } catch (e) {
@@ -1053,6 +1051,7 @@ const mqLive = document.getElementById('mqLive');
 function updateLiveBtn() {
   mqLive.textContent = liveOn ? 'Live view: ON' : 'Live view: OFF';
   mqLive.style.color = liveOn ? '#22d3ee' : '';
+  panUpdateReadout();   // target readout depends on live view being on
 }
 function setLive(on) {
   if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
@@ -1086,47 +1085,65 @@ function setLive(on) {
 }
 mqLive.onclick = () => setLive(!liveOn);
 
-/* ==== Pan Align — increment 1: motor jog + position readout =====================
+/* ==== Pan Align — motor jog + radar target readout ============================
  * ZC → ESP32 (over the converter, MQTT):
  *   zigbee2mqtt/<dev>/set  {"pan_jog": <signed int half-steps>}   + = CW, − = CCW (map view, from above)
  *   zigbee2mqtt/<dev>/set  {"pan_stop": true}
- * ESP32 → ZC (device state topic / /get):
- *   pan_position — signed half-steps from home ·  pan_limit — max ± travel (soft limit)
  *   ~0.088°/half-step (28BYJ-48 half-step, ~4096/rev).
- * Firmware side NOT yet implemented — jogs publish but the device won't move yet.
- * Backlash (pan-align-design §4): moves are monotonic; the firmware never auto-reverses
- * within a jog, and this UI clamps a jog to remaining travel so a tap can't overshoot. */
+ * The firmware authoritatively caps every jog to 45° (512 half-steps) and total travel to
+ * ±135° (±1536) — that on-device clamp is what protects the USB power cable, so nothing
+ * entered here can twist it; the UI step-size limits are just belt-and-suspenders.
+ * There is NO motor-position feedback: the motor is open-loop (no encoder), so instead of a
+ * meaningless commanded-step count the readout shows the RADAR's read of the target (x,y) in
+ * room mm. During a survey, stand at a known spot and jog until the sensor's read matches
+ * where you actually are — the radar is the only real measurement. Needs Live view ON. */
 const PAN_DEG_PER_STEP = 360 / 4096;
-// Defaults until the device reports: assume home@0; ±90° travel ≈ ±1024 half-steps
-// (pan-align-design §Open-decisions, resolved 2026-07-18). Device pan_limit overrides.
-let panPosition = 0, panLimit = 1024;
 function panUpdateReadout() {
   const el = document.getElementById('panStatus');
   if (!el) return;
-  if (panPosition == null) { el.textContent = 'pan: — steps (—°)'; return; }
-  const deg = (panPosition * PAN_DEG_PER_STEP).toFixed(1);
-  el.textContent = `pan: ${panPosition} steps (${deg}°)` + (panLimit != null ? `  · limit ±${panLimit}` : '');
+  if (!liveOn) { el.textContent = 'target: — (live view off)'; return; }
+  const pts = (liveTargets || []).filter(t => t && Number.isFinite(t.x) && Number.isFinite(t.y));
+  if (!pts.length) { el.textContent = 'target: none in view'; return; }
+  el.textContent = 'target: ' + pts.map(t => `(${Math.round(t.x)}, ${Math.round(t.y)}) mm`).join('  ');
 }
 function panJog(steps) {
   if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
-  if (panLimit != null && panPosition != null) {   // clamp to remaining travel (never overshoot the soft limit)
-    const cap = steps > 0 ? (panLimit - panPosition) : (-panLimit - panPosition);
-    if (Math.sign(cap) !== Math.sign(steps) || Math.abs(cap) < Math.abs(steps)) steps = cap;
-    if (!steps) { setMq('pan: at soft limit', ''); return; }
-  }
+  // No UI travel clamp — the firmware enforces the ±135° soft limit authoritatively.
   z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_jog: steps }));
 }
 function panStop() {
   if (z2mClient && liveDevice) z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_stop: true }));
 }
+// Clamp a step-size input to its own [min,max] — a typed value can exceed the HTML max
+// attribute (which only bounds the spinner), so clamp in JS before jogging. Belt-and-
+// suspenders: the firmware caps every jog at 512 regardless, but this keeps the UI honest
+// (no "asked for 900, moved 512") and updates the live degree readout.
+function panClampStep(el, def) {
+  const min = parseInt(el.min, 10) || 1, max = parseInt(el.max, 10) || 512;
+  let v = parseInt(el.value, 10);
+  if (!Number.isFinite(v)) v = def;
+  v = Math.min(max, Math.max(min, v));
+  if (String(v) !== el.value) el.value = v;   // reflect the clamp back to the field
+  return v;
+}
+function panUpdateStepDegrees() {
+  const c = document.getElementById('panCoarse'), f = document.getElementById('panFine');
+  const cd = document.getElementById('panCoarseDeg'), fd = document.getElementById('panFineDeg');
+  if (c && cd) cd.textContent = ` ≈ ${(panClampStep(c, 512) * PAN_DEG_PER_STEP).toFixed(1)}°`;
+  if (f && fd) fd.textContent = ` ≈ ${(panClampStep(f, 64)  * PAN_DEG_PER_STEP).toFixed(1)}°`;
+}
 {
-  const coarse = () => parseInt(document.getElementById('panCoarse').value, 10) || 64;
-  const fine   = () => parseInt(document.getElementById('panFine').value, 10) || 8;
+  const coarse = () => panClampStep(document.getElementById('panCoarse'), 512);
+  const fine   = () => panClampStep(document.getElementById('panFine'), 64);
   document.getElementById('panCCWc').onclick = () => panJog(-coarse());
   document.getElementById('panCCWf').onclick = () => panJog(-fine());
   document.getElementById('panCWf').onclick  = () => panJog(+fine());
   document.getElementById('panCWc').onclick  = () => panJog(+coarse());
   document.getElementById('panStop').onclick = panStop;
+  document.getElementById('panCoarse').addEventListener('input', panUpdateStepDegrees);
+  document.getElementById('panFine').addEventListener('input', panUpdateStepDegrees);
+  panUpdateStepDegrees();   // seed the degree labels at boot
+  panUpdateReadout();       // seed the target readout at boot
 }
 
 // boot

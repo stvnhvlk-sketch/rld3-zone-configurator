@@ -136,11 +136,15 @@
     <button id="panStop" title="Stop" style="color:#fb7185">■</button>
   </div>
   <div class="row" style="gap:10px; align-items:center">
-    <label>Coarse<input type="number" id="panCoarse" value="512" min="1" max="512" style="width:60px" /><span id="panCoarseDeg" style="color:#8a97a8; font-size:11px"></span></label>
-    <label>Fine<input type="number" id="panFine" value="64" min="1" max="128" style="width:52px" /><span id="panFineDeg" style="color:#8a97a8; font-size:11px"></span></label>
-    <span style="color:#8a97a8; font-size:11px">steps · 0.088°/step · jog cap 45°</span>
+    <label>Coarse<input type="number" id="panCoarse" value="45" min="0.1" max="45" step="0.1" style="width:60px" />°</label>
+    <label>Fine<input type="number" id="panFine" value="5" min="0.1" max="20" step="0.1" style="width:52px" />°</label>
+    <span style="color:#8a97a8; font-size:11px">max 45° per press</span>
   </div>
   <div id="panStatus" title="Radar read of the target position (room frame). Stand at a known spot and jog until this matches where you are." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">target: — (live view off)</div>
+  <div class="row" style="gap:8px; align-items:center">
+    <button id="panApplyErr" title="Jog the pan motor to close the bearing error between the detected target and the You Are Here dot" disabled>Jog to align</button>
+  </div>
+  <div id="panErrStatus" title="Bearing error between the You Are Here dot and the live detected target, and the pan jog that would close it. Place You Are Here and stand in view to use." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">place "You Are Here" and stand where the sensor can see you</div>
 
   <!-- "You Are Here" — place where you're actually standing, compare against the
        live detected target, and read the yaw correction directly instead of
@@ -739,15 +743,16 @@ function refreshStatus() {
 function wrapDeg(d) { return ((d + 180) % 360 + 360) % 360 - 180; }
 
 let alignSuggestedYawDeg = null;   // stashed by alignUpdate() for the Apply button
+let alignErrorDeg = null;          // stashed by alignUpdate() for panUpdateAlignError()
 
 function alignUpdate() {
   const box = document.getElementById('alignStatus');
   const btn = document.getElementById('alignApply');
-  if (!box || !btn) return;   // called before DOM ready during early draw()s
+  if (!box || !btn) { panUpdateAlignError(); return; }   // called before DOM ready during early draw()s
 
   if (!alignTarget) {
     box.textContent = 'place "You Are Here", then stand where the sensor can see you';
-    btn.disabled = true; alignSuggestedYawDeg = null; return;
+    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
   }
 
   const rel = { x: alignTarget.x - sensor.x, y: alignTarget.y - sensor.y };
@@ -755,16 +760,16 @@ function alignUpdate() {
 
   if (!liveOn) {
     box.textContent = `stated ${betaStated.toFixed(1)}°\nturn on Live view to compare against the detected target`;
-    btn.disabled = true; alignSuggestedYawDeg = null; return;
+    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
   }
   const present = liveTargets.filter(Boolean);
   if (present.length === 0) {
     box.textContent = `stated ${betaStated.toFixed(1)}°\nno target detected — stand where the sensor can see you`;
-    btn.disabled = true; alignSuggestedYawDeg = null; return;
+    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
   }
   if (present.length > 1) {
     box.textContent = `stated ${betaStated.toFixed(1)}°\n${present.length} targets detected — only one person should be in view`;
-    btn.disabled = true; alignSuggestedYawDeg = null; return;
+    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
   }
 
   const t = present[0];
@@ -777,6 +782,46 @@ function alignUpdate() {
     `error ${errorDeg >= 0 ? '+' : ''}${errorDeg.toFixed(1)}° · suggested yaw ${suggested.toFixed(1)}° (now ${yawNow.toFixed(1)}°)`;
   btn.disabled = false;
   alignSuggestedYawDeg = suggested;
+  alignErrorDeg = errorDeg;
+  panUpdateAlignError();
+}
+
+/* Pan-align bearing error → jog. Reuses alignUpdate()'s errorDeg (same "You Are
+ * Here" vs detected-target bearing gap the Apply-suggested-yaw button uses) but
+ * converts it to a PHYSICAL pan jog instead of a software yaw edit.
+ *
+ * Sign derivation: betaDisplayed = beta_raw + yaw_configured (room = rotate raw
+ * sensor-frame CCW by yaw — geometry.js header). Physically panning the sensor
+ * CW by φ (pan_jog's own + convention) shifts a FIXED external point's raw
+ * local bearing by +φ (turn your view CW and a stationary point swings toward
+ * your CCW/left side, in your own local frame) — i.e. beta_raw_after =
+ * beta_raw_before + φ, holding yaw_configured unchanged. That is algebraically
+ * identical to the software fix (bumping yaw_configured by the same φ instead)
+ * — both add φ to betaDisplayed. Since the software fix is Δyaw = +errorDeg
+ * (suggested = yawNow + errorDeg, verified above), the physical fix is the
+ * SAME sign and magnitude: Δφ (CW jog) = +errorDeg. Verified independently
+ * against the yaw formula before trusting it near a stepper motor — see
+ * commit notes. Still: confirm with one small jog on the bench before relying
+ * on it for a full coarse correction. */
+function panUpdateAlignError() {
+  const box = document.getElementById('panErrStatus');
+  const btn = document.getElementById('panApplyErr');
+  if (!box || !btn) return;   // called before DOM ready during early draw()s
+
+  if (alignErrorDeg == null) {
+    box.textContent = 'place "You Are Here" and stand where the sensor can see you';
+    btn.disabled = true; btn.textContent = 'Jog to align';
+    return;
+  }
+  const jogDeg = alignErrorDeg;            // physical CW jog that closes the error
+  const dir = jogDeg >= 0 ? 'CW' : 'CCW';
+  const withinCoarseCap = Math.abs(jogDeg) <= 45;
+  box.textContent =
+    `error ${alignErrorDeg >= 0 ? '+' : ''}${alignErrorDeg.toFixed(1)}°\n` +
+    `pan jog ${Math.abs(jogDeg).toFixed(1)}° ${dir}` +
+    (withinCoarseCap ? ' (fits one coarse jog)' : ' — exceeds the 45° single-jog cap, jog manually in steps');
+  btn.disabled = !withinCoarseCap;
+  btn.textContent = withinCoarseCap ? `Jog ${Math.abs(jogDeg).toFixed(1)}° ${dir} to align` : 'Jog to align';
 }
 
 function updateHint() {
@@ -910,6 +955,12 @@ document.getElementById('alignApply').onclick = () => {
   mount.yawDeciDeg = Math.round(alignSuggestedYawDeg * 10);
   document.getElementById('yaw').value = (mount.yawDeciDeg / 10).toFixed(1);
   draw();   // still requires the normal Write-to-sensor step to reach the device
+};
+document.getElementById('panApplyErr').onclick = () => {
+  if (alignErrorDeg == null) return;
+  const jogDeg = alignErrorDeg;
+  if (Math.abs(jogDeg) > 45) return;   // belt-and-suspenders; button is disabled past the cap
+  panJog(Math.round(jogDeg / PAN_DEG_PER_STEP));
 };
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
 
@@ -1214,10 +1265,12 @@ mqLive.onclick = () => setLive(!liveOn);
  * ZC → ESP32 (over the converter, MQTT):
  *   zigbee2mqtt/<dev>/set  {"pan_jog": <signed int half-steps>}   + = CW, − = CCW (map view, from above)
  *   zigbee2mqtt/<dev>/set  {"pan_stop": true}
- *   ~0.088°/half-step (28BYJ-48 half-step, ~4096/rev).
+ * The Coarse/Fine inputs are in DEGREES — the operator has no reason to know or care
+ * about half-steps, so the °→half-step conversion (0.088°/half-step, 4096/rev) happens
+ * invisibly in panClampDegreesToSteps() below; pan_jog on the wire is still half-steps.
  * The firmware authoritatively caps every jog to 45° (512 half-steps) and total travel to
  * ±135° (±1536) — that on-device clamp is what protects the USB power cable, so nothing
- * entered here can twist it; the UI step-size limits are just belt-and-suspenders.
+ * entered here can twist it; the UI degree limits are just belt-and-suspenders.
  * There is NO motor-position feedback: the motor is open-loop (no encoder), so instead of a
  * meaningless commanded-step count the readout shows the RADAR's read of the target (x,y) in
  * room mm. During a survey, stand at a known spot and jog until the sensor's read matches
@@ -1239,35 +1292,27 @@ function panJog(steps) {
 function panStop() {
   if (z2mClient && liveDevice) z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_stop: true }));
 }
-// Clamp a step-size input to its own [min,max] — a typed value can exceed the HTML max
-// attribute (which only bounds the spinner), so clamp in JS before jogging. Belt-and-
-// suspenders: the firmware caps every jog at 512 regardless, but this keeps the UI honest
-// (no "asked for 900, moved 512") and updates the live degree readout.
-function panClampStep(el, def) {
-  const min = parseInt(el.min, 10) || 1, max = parseInt(el.max, 10) || 512;
-  let v = parseInt(el.value, 10);
-  if (!Number.isFinite(v)) v = def;
-  v = Math.min(max, Math.max(min, v));
-  if (String(v) !== el.value) el.value = v;   // reflect the clamp back to the field
-  return v;
-}
-function panUpdateStepDegrees() {
-  const c = document.getElementById('panCoarse'), f = document.getElementById('panFine');
-  const cd = document.getElementById('panCoarseDeg'), fd = document.getElementById('panFineDeg');
-  if (c && cd) cd.textContent = ` ≈ ${(panClampStep(c, 512) * PAN_DEG_PER_STEP).toFixed(1)}°`;
-  if (f && fd) fd.textContent = ` ≈ ${(panClampStep(f, 64)  * PAN_DEG_PER_STEP).toFixed(1)}°`;
+// Clamp a degrees-based step-size input to its own [min,max] and convert to the
+// half-step count panJog() needs. A typed value can exceed the HTML max attribute
+// (which only bounds the spinner), so clamp in JS before jogging — belt-and-
+// suspenders; the firmware's 45° per-jog cap is still the real guard. Rounds to
+// the nearest whole half-step since that's all the motor can actually do.
+function panClampDegreesToSteps(el, defDeg) {
+  const minDeg = parseFloat(el.min) || 0.1, maxDeg = parseFloat(el.max) || 45;
+  let deg = parseFloat(el.value);
+  if (!Number.isFinite(deg)) deg = defDeg;
+  deg = Math.min(maxDeg, Math.max(minDeg, deg));
+  if (String(deg) !== el.value) el.value = deg;   // reflect the clamp back to the field
+  return Math.round(deg / PAN_DEG_PER_STEP);
 }
 {
-  const coarse = () => panClampStep(document.getElementById('panCoarse'), 512);
-  const fine   = () => panClampStep(document.getElementById('panFine'), 64);
+  const coarse = () => panClampDegreesToSteps(document.getElementById('panCoarse'), 45);
+  const fine   = () => panClampDegreesToSteps(document.getElementById('panFine'), 5);
   document.getElementById('panCCWc').onclick = () => panJog(-coarse());
   document.getElementById('panCCWf').onclick = () => panJog(-fine());
   document.getElementById('panCWf').onclick  = () => panJog(+fine());
   document.getElementById('panCWc').onclick  = () => panJog(+coarse());
   document.getElementById('panStop').onclick = panStop;
-  document.getElementById('panCoarse').addEventListener('input', panUpdateStepDegrees);
-  document.getElementById('panFine').addEventListener('input', panUpdateStepDegrees);
-  panUpdateStepDegrees();   // seed the degree labels at boot
   panUpdateReadout();       // seed the target readout at boot
 }
 

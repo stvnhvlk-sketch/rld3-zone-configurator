@@ -105,6 +105,7 @@
     <button data-mode="draw">Draw</button>
     <button data-mode="edit">Edit</button>
     <button data-mode="sensor">Place Sensor</button>
+    <button data-mode="align">You Are Here</button>
     <button data-mode="pan" class="on">Pan</button>
   </div>
   <div class="row">
@@ -140,6 +141,15 @@
     <span style="color:#8a97a8; font-size:11px">steps · 0.088°/step · jog cap 45°</span>
   </div>
   <div id="panStatus" title="Radar read of the target position (room frame). Stand at a known spot and jog until this matches where you are." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">target: — (live view off)</div>
+
+  <!-- "You Are Here" — place where you're actually standing, compare against the
+       live detected target, and read the yaw correction directly instead of
+       computing it by hand. See _Documentation/RLD3Target-auto-align.md §12. -->
+  <div class="row" style="gap:8px; align-items:center">
+    <button id="alignClear" title="Remove the You Are Here dot">Clear dot</button>
+    <button id="alignApply" title="Copy the suggested yaw into the Yaw field above (still requires Write to sensor)" disabled>Apply suggested yaw</button>
+  </div>
+  <div id="alignStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">place "You Are Here", then stand where the sensor can see you</div>
 
   <h2>Validation</h2>
   <div id="status">—</div>
@@ -279,6 +289,13 @@ let rectDragOrig = null;     // { rect, startSensor } while moving an exclusion 
 let polyDragOrig = null;     // { verts, start } while moving a whole polygon zone
 let sensorPlacing = false;   // dragging the sensor in 'sensor' mode
 
+// "You Are Here" — the operator's stated position, ABSOLUTE frame (same as
+// polys). Session-only: NOT saved to layout, NOT written to the device — it is
+// a placement aid for computing the yaw correction (auto-align §12), not zone
+// or mounting data.
+let alignTarget = null;      // {x,y} | null
+let alignPlacing = false;    // dragging the dot in 'align' mode
+
 // --- Device read state (A1/A2) -------------------------------------------------
 let deviceReports = {};       // merged JSON from device state topic during a Read
 let loadedZoneStates = null;  // zoneStates returned by the last layoutFromReports
@@ -329,8 +346,10 @@ function draw() {
   for (const z of ZONES) drawZone(z);
   drawDraft();
   drawLiveTargets();
+  drawAlignTarget();
   drawAxisLegend();
   refreshStatus();
+  alignUpdate();
   updateHint();
   updateZoneBadges();
   updateFinishButton();
@@ -403,6 +422,42 @@ function drawLiveTargets() {
     ctx.fillStyle = '#22d3ee'; ctx.fill();
     ctx.lineWidth = 1.5; ctx.strokeStyle = '#0e7490'; ctx.stroke();
   }
+}
+
+// Fuchsia, distinct from every zone/target/mode-highlight color already in use.
+const ALIGN_COLOR = '#e879f9';
+
+/** A dashed ray from `from` through `through`, extended well past the room —
+ * both points already in ABSOLUTE frame, so no mount transform is needed. */
+function drawRay(from, through, color) {
+  const dx = through.x - from.x, dy = through.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const scale = 20000 / len;   // far past any realistic room
+  const far = { x: from.x + dx * scale, y: from.y + dy * scale };
+  const a = w2s(from), b = w2s(far);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+  ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// "You Are Here" — the stated position (auto-align §12). A ray from the sensor
+// through both the stated dot and the single live target makes the bearing gap
+// (the yaw error) directly visible; the dot is session-only, never saved/written.
+function drawAlignTarget() {
+  if (!alignTarget) return;
+  const from = { x: sensor.x, y: sensor.y };
+  drawRay(from, alignTarget, ALIGN_COLOR);
+
+  const onlyTarget = liveTargets.filter(Boolean);
+  if (onlyTarget.length === 1) {
+    const t = onlyTarget[0];
+    drawRay(from, { x: sensor.x + t.x, y: sensor.y + t.y }, '#22d3ee');
+  }
+
+  const s = w2s(alignTarget);
+  ctx.beginPath(); ctx.arc(s.sx, s.sy, 7, 0, Math.PI * 2);
+  ctx.fillStyle = ALIGN_COLOR; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = '#701a75'; ctx.stroke();
 }
 
 function drawRegion(env, fill, stroke) {
@@ -514,6 +569,10 @@ cv.addEventListener('mousedown', (e) => {
     sensor.x = Math.round(wp.x); sensor.y = Math.round(wp.y);
     sensorPlacing = true; dragging = true; draw(); return;
   }
+  if (mode === 'align') {
+    alignTarget = { x: Math.round(wp.x), y: Math.round(wp.y) };
+    alignPlacing = true; dragging = true; draw(); return;
+  }
   const z = zoneById[activeId];
 
   if (mode === 'draw') {
@@ -567,6 +626,11 @@ cv.addEventListener('mousemove', (e) => {
   }
   if (!dragging) return;
   if (sensorPlacing) { const w = evWorld(e); sensor.x = Math.round(w.x); sensor.y = Math.round(w.y); draw(); return; }
+  if (alignPlacing) {
+    const w = evWorld(e);
+    alignTarget = { x: Math.round(w.x), y: Math.round(w.y) };
+    draw(); return;
+  }
   const kind = zoneById[activeId].kind;
   if (kind === 'poly' && polys[activeId]) {
     if (polyDragOrig) {                    // move whole zone: translate all vertices
@@ -604,6 +668,7 @@ window.addEventListener('mouseup', () => {
     rects[activeId] = norm({ x: r.x1, y: r.y1 }, { x: r.x2, y: r.y2 });
   }
   dragging = false; panLast = null; rectDragOrig = null; polyDragOrig = null; sensorPlacing = false;
+  alignPlacing = false;
 });
 
 cv.addEventListener('wheel', (e) => {
@@ -663,6 +728,57 @@ function refreshStatus() {
     s.className = 'ok';
   }
 }
+// "You Are Here" bearing readout — the ZC-side one-shot yaw computation from
+// auto-align §12.2: yaw_new = yaw_current + (β_stated − β_displayed). Both
+// bearings are atan2 of vectors already in the SAME frame (sensor-relative,
+// translation only for the stated dot since it and `sensor` share the true,
+// unrotated absolute axes; the live target is already forward-transformed by
+// the device's current — possibly wrong — yaw). No inverted-case branch is
+// needed here: `t` already has invert+rotation baked in by the firmware, so
+// "current yaw + bearing gap" holds regardless of the inverted flag.
+function wrapDeg(d) { return ((d + 180) % 360 + 360) % 360 - 180; }
+
+let alignSuggestedYawDeg = null;   // stashed by alignUpdate() for the Apply button
+
+function alignUpdate() {
+  const box = document.getElementById('alignStatus');
+  const btn = document.getElementById('alignApply');
+  if (!box || !btn) return;   // called before DOM ready during early draw()s
+
+  if (!alignTarget) {
+    box.textContent = 'place "You Are Here", then stand where the sensor can see you';
+    btn.disabled = true; alignSuggestedYawDeg = null; return;
+  }
+
+  const rel = { x: alignTarget.x - sensor.x, y: alignTarget.y - sensor.y };
+  const betaStated = Math.atan2(rel.y, rel.x) * 180 / Math.PI;
+
+  if (!liveOn) {
+    box.textContent = `stated ${betaStated.toFixed(1)}°\nturn on Live view to compare against the detected target`;
+    btn.disabled = true; alignSuggestedYawDeg = null; return;
+  }
+  const present = liveTargets.filter(Boolean);
+  if (present.length === 0) {
+    box.textContent = `stated ${betaStated.toFixed(1)}°\nno target detected — stand where the sensor can see you`;
+    btn.disabled = true; alignSuggestedYawDeg = null; return;
+  }
+  if (present.length > 1) {
+    box.textContent = `stated ${betaStated.toFixed(1)}°\n${present.length} targets detected — only one person should be in view`;
+    btn.disabled = true; alignSuggestedYawDeg = null; return;
+  }
+
+  const t = present[0];
+  const betaDisplayed = Math.atan2(t.y, t.x) * 180 / Math.PI;
+  const errorDeg = wrapDeg(betaStated - betaDisplayed);
+  const yawNow = mount.yawDeciDeg / 10;
+  const suggested = wrapDeg(yawNow + errorDeg);
+  box.textContent =
+    `stated ${betaStated.toFixed(1)}° · detected ${betaDisplayed.toFixed(1)}°\n` +
+    `error ${errorDeg >= 0 ? '+' : ''}${errorDeg.toFixed(1)}° · suggested yaw ${suggested.toFixed(1)}° (now ${yawNow.toFixed(1)}°)`;
+  btn.disabled = false;
+  alignSuggestedYawDeg = suggested;
+}
+
 function updateHint() {
   const isRect = zoneById[activeId].kind === 'rect';
   let h;
@@ -674,6 +790,8 @@ function updateHint() {
                : 'Edit: drag a vertex, drag inside to move the zone, click an edge to add a vertex, Del removes.';
   } else if (mode === 'sensor') {
     h = 'Sensor: click or drag to place the sensor; set Yaw / Inverted to aim its field of view.';
+  } else if (mode === 'align') {
+    h = 'You Are Here: click or drag to mark where you are standing, then read the yaw correction below.';
   } else {
     h = 'Pan: drag to move. Wheel=zoom.';
   }
@@ -786,6 +904,13 @@ document.getElementById('clearZone').onclick = () => {
 };
 // Field is in DEGREES (intuitive); the wire attr 0x0100 is 0.1° units, so store deci-degrees.
 document.getElementById('yaw').oninput = (e) => { mount.yawDeciDeg = Math.round((parseFloat(e.target.value) || 0) * 10); draw(); };
+document.getElementById('alignClear').onclick = () => { alignTarget = null; draw(); };
+document.getElementById('alignApply').onclick = () => {
+  if (alignSuggestedYawDeg == null) return;
+  mount.yawDeciDeg = Math.round(alignSuggestedYawDeg * 10);
+  document.getElementById('yaw').value = (mount.yawDeciDeg / 10).toFixed(1);
+  draw();   // still requires the normal Write-to-sensor step to reach the device
+};
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
 
 // Tool layout JSON = ABSOLUTE polygons + sensor placement (round-trips for editing).

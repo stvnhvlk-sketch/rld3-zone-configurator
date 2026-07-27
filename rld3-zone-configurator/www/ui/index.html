@@ -16,7 +16,11 @@
     background: #151a21; border-right: 1px solid #232b36;
   }
   #stage { flex: 1; position: relative; }
-  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  /* touch-action:none — the canvas handles its own drag/pinch via pointer
+     events. Without it a tablet browser claims the gesture for page scroll/zoom
+     and the canvas never sees a move at all. Scoped to the canvas so the side
+     panel still scrolls normally. */
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
   h1 { font-size: 14px; margin: 0 0 10px; letter-spacing: .02em; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
        color: #8a97a8; margin: 16px 0 6px; }
@@ -566,14 +570,56 @@ function updateCoords(e) {
     `room ${Math.round(w.x)}, ${Math.round(w.y)} mm · sensor ${Math.round(sf.x)}, ${Math.round(sf.y)} mm`;
 }
 
-cv.addEventListener('mousedown', (e) => {
+/* --- Pointer input (mouse + touch + pen) -------------------------------------
+ * Pointer events replace the original mouse-only handlers so the tool works on
+ * a tablet: one code path serves all input types, and desktop behaviour is
+ * unchanged (a mouse is just a pointer with e.button).
+ *
+ * Two-finger pinch drives the same zoomAt()/pan() the wheel does — a pinch
+ * NEVER produces a wheel event, so without this there is no way to zoom by
+ * touch at all.
+ *
+ * gestureUndo: a tap commits immediately on pointerDOWN (adds a vertex, places
+ * the sensor/dot). If a second finger then lands, the gesture was really a
+ * pinch and that commit was unintended — so each committing branch records how
+ * to reverse itself, and beginPinch() calls it.
+ */
+const activePointers = new Map();   // pointerId -> {x, y} client coords
+let pinch = null;                   // {dist, cx, cy} while two pointers are down
+let gestureUndo = null;             // reverses this gesture's commit, if any
+
+function pinchState() {
+  const [a, b] = [...activePointers.values()];
+  return { dist: Math.hypot(b.x - a.x, b.y - a.y),
+           cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+}
+
+function beginPinch() {
+  if (gestureUndo) { gestureUndo(); gestureUndo = null; }
+  dragging = false; panLast = null; sensorPlacing = false; alignPlacing = false;
+  rectDragOrig = null; polyDragOrig = null;
+  pinch = pinchState();
+  draw();
+}
+
+cv.addEventListener('pointerdown', (e) => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) { beginPinch(); return; }
+  if (activePointers.size > 2) return;          // 3+ fingers: ignore entirely
+  if (cv.setPointerCapture) cv.setPointerCapture(e.pointerId);
+  gestureUndo = null;
+
   const wp = evWorld(e);
   if (mode === 'pan' || e.button === 1) { panLast = { x: e.clientX, y: e.clientY }; return; }
   if (mode === 'sensor') {
+    const prev = { x: sensor.x, y: sensor.y };
+    gestureUndo = () => { sensor.x = prev.x; sensor.y = prev.y; };
     sensor.x = Math.round(wp.x); sensor.y = Math.round(wp.y);
     sensorPlacing = true; dragging = true; draw(); return;
   }
   if (mode === 'align') {
+    const prev = alignTarget ? { ...alignTarget } : null;
+    gestureUndo = () => { alignTarget = prev; };
     alignTarget = { x: Math.round(wp.x), y: Math.round(wp.y) };
     alignPlacing = true; dragging = true; draw(); return;
   }
@@ -583,10 +629,13 @@ cv.addEventListener('mousedown', (e) => {
     if (z.kind === 'poly') {
       const closeDist = pxToWorld(vp, 10);
       if (shouldClosePolygon(draft, wp, closeDist)) return finishDraft();
-      if (draft.length < DEFAULT_MAX_VERTICES) draft.push(round(wp));
+      if (draft.length < DEFAULT_MAX_VERTICES) {
+        draft.push(round(wp));
+        gestureUndo = () => { draft.pop(); };
+      }
       draw();
     } else { // rect: two room clicks → axis-aligned SENSOR-frame rect (§6)
-      if (draft.length === 0) draft.push(wp);
+      if (draft.length === 0) { draft.push(wp); gestureUndo = () => { draft.length = 0; }; }
       else {
         const a = absToSensor(draft[0]), b = absToSensor(wp);
         rects[z.id] = norm(round(a), round(b));
@@ -622,13 +671,30 @@ cv.addEventListener('mousedown', (e) => {
   }
 });
 
-cv.addEventListener('mousemove', (e) => {
+cv.addEventListener('pointermove', (e) => {
+  if (activePointers.has(e.pointerId))
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  // Two fingers: pinch-zoom about the midpoint, and pan by the midpoint's
+  // travel so the gesture feels anchored to the fingers.
+  if (pinch && activePointers.size >= 2) {
+    const now = pinchState();
+    const r = cv.getBoundingClientRect();
+    if (pinch.dist > 0 && now.dist > 0) {
+      vp = pan(vp, now.cx - pinch.cx, now.cy - pinch.cy);
+      vp = zoomAt(vp, now.dist / pinch.dist,
+                  { sx: now.cx - r.left, sy: now.cy - r.top });
+    }
+    pinch = now; draw(); return;
+  }
+
   updateCoords(e);
   if (panLast) {
     vp = pan(vp, e.clientX - panLast.x, e.clientY - panLast.y);
     panLast = { x: e.clientX, y: e.clientY }; draw(); return;
   }
   if (!dragging) return;
+  gestureUndo = null;        // a real drag — the initial commit was intended
   if (sensorPlacing) { const w = evWorld(e); sensor.x = Math.round(w.x); sensor.y = Math.round(w.y); draw(); return; }
   if (alignPlacing) {
     const w = evWorld(e);
@@ -665,7 +731,12 @@ cv.addEventListener('mousemove', (e) => {
     }
   }
 });
-window.addEventListener('mouseup', () => {
+function endPointer(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinch = null;
+  if (activePointers.size > 0) return;   // other fingers still down
+
+  gestureUndo = null;
   // Re-order a resized exclusion so x1<x2, y1<y2 (corner may have crossed over).
   if (dragging && !rectDragOrig && zoneById[activeId] && zoneById[activeId].kind === 'rect' && rects[activeId]) {
     const r = rects[activeId];
@@ -673,7 +744,9 @@ window.addEventListener('mouseup', () => {
   }
   dragging = false; panLast = null; rectDragOrig = null; polyDragOrig = null; sensorPlacing = false;
   alignPlacing = false;
-});
+}
+window.addEventListener('pointerup', endPointer);
+window.addEventListener('pointercancel', endPointer);
 
 cv.addEventListener('wheel', (e) => {
   e.preventDefault();

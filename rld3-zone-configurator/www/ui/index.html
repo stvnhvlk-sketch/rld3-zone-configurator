@@ -790,19 +790,23 @@ function alignUpdate() {
  * Here" vs detected-target bearing gap the Apply-suggested-yaw button uses) but
  * converts it to a PHYSICAL pan jog instead of a software yaw edit.
  *
- * Sign derivation: betaDisplayed = beta_raw + yaw_configured (room = rotate raw
- * sensor-frame CCW by yaw — geometry.js header). Physically panning the sensor
- * CW by φ (pan_jog's own + convention) shifts a FIXED external point's raw
- * local bearing by +φ (turn your view CW and a stationary point swings toward
- * your CCW/left side, in your own local frame) — i.e. beta_raw_after =
- * beta_raw_before + φ, holding yaw_configured unchanged. That is algebraically
- * identical to the software fix (bumping yaw_configured by the same φ instead)
- * — both add φ to betaDisplayed. Since the software fix is Δyaw = +errorDeg
- * (suggested = yawNow + errorDeg, verified above), the physical fix is the
- * SAME sign and magnitude: Δφ (CW jog) = +errorDeg. Verified independently
- * against the yaw formula before trusting it near a stepper motor — see
- * commit notes. Still: confirm with one small jog on the bench before relying
- * on it for a full coarse correction. */
+ * Sign: MEASURED ON HARDWARE, not derived. Bench run 2026-07-27
+ * (rld3-bench/2026-07-27_005635_dc3_run4_keyboard) commanded pan_jog +114
+ * half-steps (nominally +10 deg "CW") and the target's sensor-frame bearing
+ * DECREASED by 11.7 deg; the reciprocal -114 jog moved it +13.7 deg. So a
+ * POSITIVE jog REDUCES the bearing, and the jog that closes the error is
+ *     Δφ = −errorDeg.
+ * An earlier revision derived +errorDeg from the yaw convention in
+ * geometry.js and was WRONG on hardware — the derivation assumed a mapping
+ * between pan_jog's "+ = CW" label and the sensor-frame bearing sign that the
+ * physical assembly does not honour. Trust the measurement. If the sensor is
+ * ever remounted, re-geared, or the inverted flag changes, RE-MEASURE rather
+ * than re-derive: a flipped sign here doubles the error instead of closing it.
+ *
+ * Magnitude caveat: 10 deg commanded produced ~11.7 deg measured (~17% over),
+ * present in the RAW detections and so mechanical (likely rotation not about
+ * the sensor's optical centre) rather than a filter artifact. Expect one
+ * press to slightly overshoot; iterate rather than trusting a single jog. */
 function panUpdateAlignError() {
   const box = document.getElementById('panErrStatus');
   const btn = document.getElementById('panApplyErr');
@@ -813,7 +817,7 @@ function panUpdateAlignError() {
     btn.disabled = true; btn.textContent = 'Jog to align';
     return;
   }
-  const jogDeg = alignErrorDeg;            // physical CW jog that closes the error
+  const jogDeg = -alignErrorDeg;           // measured on hardware — see above
   const dir = jogDeg >= 0 ? 'CW' : 'CCW';
   const withinCoarseCap = Math.abs(jogDeg) <= 45;
   box.textContent =
@@ -958,7 +962,7 @@ document.getElementById('alignApply').onclick = () => {
 };
 document.getElementById('panApplyErr').onclick = () => {
   if (alignErrorDeg == null) return;
-  const jogDeg = alignErrorDeg;
+  const jogDeg = -alignErrorDeg;       // measured on hardware — see panUpdateAlignError()
   if (Math.abs(jogDeg) > 45) return;   // belt-and-suspenders; button is disabled past the cap
   panJog(Math.round(jogDeg / PAN_DEG_PER_STEP));
 };

@@ -31,6 +31,9 @@
   }
   button { cursor: pointer; }
   button:hover { background: #25303d; }
+  /* Rotation glyphs (U+21BA/21BB) render small and thin at body size — bump
+     them so the direction reads at a glance, including on a tablet. */
+  button.rot { font-size: 17px; line-height: 1; letter-spacing: -1px; }
   button:disabled { opacity: 0.4; cursor: default; }
   button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
   label { display: flex; align-items: center; gap: 6px; }
@@ -128,16 +131,27 @@
     <label><input type="checkbox" id="inverted" /> Inverted (ceiling)</label>
   </div>
 
-  <!-- Pan Align (motorized yaw) — increment 1: manual jog + position readout.
-       Full angle-null alignment (landmark/error/auto-approach) is increment 2.
-       See _Documentation/pan-align-design.md. -->
-  <h2>Pan Align</h2>
+  <!-- Motorized yaw alignment. Canonical design: _Documentation/RLD3Target-auto-align.md
+       (pan-align-design.md is superseded). The motor does COARSE FOV centering
+       only — software owns the exact angle via "Apply suggested yaw".
+       "Yaw Align", not "Pan Align": the goal is correcting the mounting YAW.
+       "Pan" is reserved for the MAP navigation mode above — the two used to
+       collide in this same sidebar. The motor primitive stays pan_jog/pan_stop
+       on the wire (it names the mechanism); the UI names the goal. -->
+  <h2>Yaw Align</h2>
+  <!-- U+21BA/21BB are the standard Unicode rotate glyphs. An icon font
+       (Material rotate_left/rotate_right) would render more crisply but needs
+       an external request, which this page deliberately avoids. They render
+       small at default button size, hence the explicit font-size. -->
   <div class="row">
-    <button id="panCCWc" title="CCW coarse (map view)">◄◄</button>
-    <button id="panCCWf" title="CCW fine">◄</button>
-    <button id="panCWf"  title="CW fine">►</button>
-    <button id="panCWc"  title="CW coarse">►►</button>
-    <button id="panStop" title="Stop" style="color:#fb7185">■</button>
+    <button id="panCCWc" class="rot" title="Rotate the sensor counter-clockwise by the Coarse angle — seen from above, the same orientation as the map">↺↺</button>
+    <button id="panCCWf" class="rot" title="Rotate the sensor counter-clockwise by the Fine angle — seen from above, the same orientation as the map">↺</button>
+    <button id="panCWf"  class="rot" title="Rotate the sensor clockwise by the Fine angle — seen from above, the same orientation as the map">↻</button>
+    <button id="panCWc"  class="rot" title="Rotate the sensor clockwise by the Coarse angle — seen from above, the same orientation as the map">↻↻</button>
+    <button id="panStop" title="Stop the motor immediately" style="color:#fb7185">■</button>
+  </div>
+  <div class="row">
+    <span style="color:#8a97a8; font-size:11px">↺ ↻ rotation seen from above — same orientation as the map</span>
   </div>
   <div class="row" style="gap:10px; align-items:center">
     <label>Coarse<input type="number" id="panCoarse" value="45" min="0.1" max="45" step="0.1" style="width:60px" />°</label>
@@ -876,10 +890,25 @@ function alignUpdate() {
  * ever remounted, re-geared, or the inverted flag changes, RE-MEASURE rather
  * than re-derive: a flipped sign here doubles the error instead of closing it.
  *
- * Magnitude caveat: 10 deg commanded produced ~11.7 deg measured (~17% over),
- * present in the RAW detections and so mechanical (likely rotation not about
- * the sensor's optical centre) rather than a filter artifact. Expect one
- * press to slightly overshoot; iterate rather than trusting a single jog. */
+ * Magnitude caveat: 10 deg commanded produced ~11.7 deg measured. That is
+ * within the bearing noise of a breathing human at ~2 m (137 mm of wander at
+ * 2100 mm ≈ 3.7 deg), so it is NOT established as a real scale error — but
+ * expect a press to land approximately, and iterate.
+ *
+ * BACKLASH — why this button is coarse-only and warns on reversal:
+ * 28BYJ-48 gear backlash is 2.5-8 deg, unit-variable, and grows with wear. It
+ * has NOT been measured on this assembly, and it cannot be measured against a
+ * human target: the bearing noise above (~3.7 deg) is the same order as the
+ * backlash itself. The standing strategy (RLD3Target-auto-align.md) is
+ * therefore MONOTONIC APPROACH — only ever move one direction per alignment,
+ * so slack is taken up once and never reopens, and its value never needs to be
+ * known. A button that always jogs "whichever way closes the error" breaks
+ * that the moment noise flips the sign, so it tracks the last direction and
+ * says so rather than silently eating slack. The exact angle is owned by
+ * "Apply suggested yaw" (software) — the motor only needs to get the target
+ * roughly centred in the FOV. */
+let panLastJogDir = 0;          // +1 CW, -1 CCW, 0 = none yet this session
+
 function panUpdateAlignError() {
   const box = document.getElementById('panErrStatus');
   const btn = document.getElementById('panApplyErr');
@@ -887,18 +916,26 @@ function panUpdateAlignError() {
 
   if (alignErrorDeg == null) {
     box.textContent = 'place "You Are Here" and stand where the sensor can see you';
-    btn.disabled = true; btn.textContent = 'Jog to align';
+    btn.disabled = true; btn.textContent = 'Coarse jog to centre';
     return;
   }
   const jogDeg = -alignErrorDeg;           // measured on hardware — see above
   const dir = jogDeg >= 0 ? 'CW' : 'CCW';
+  const thisDir = jogDeg >= 0 ? 1 : -1;
   const withinCoarseCap = Math.abs(jogDeg) <= 45;
+  const reversing = panLastJogDir !== 0 && thisDir !== panLastJogDir;
+
+  let note;
+  if (!withinCoarseCap) note = ' — exceeds the 45° single-jog cap, jog manually in steps';
+  else if (reversing)   note = '\n⚠ reverses the last jog — gear slack (2.5–8°, unmeasured) is taken\n  up first, so the start of this move may produce no rotation';
+  else                  note = ' (fits one coarse jog)';
+
   box.textContent =
     `error ${alignErrorDeg >= 0 ? '+' : ''}${alignErrorDeg.toFixed(1)}°\n` +
-    `pan jog ${Math.abs(jogDeg).toFixed(1)}° ${dir}` +
-    (withinCoarseCap ? ' (fits one coarse jog)' : ' — exceeds the 45° single-jog cap, jog manually in steps');
+    `rotate ${Math.abs(jogDeg).toFixed(1)}° ${dir}` + note;
   btn.disabled = !withinCoarseCap;
-  btn.textContent = withinCoarseCap ? `Jog ${Math.abs(jogDeg).toFixed(1)}° ${dir} to align` : 'Jog to align';
+  btn.textContent = withinCoarseCap
+    ? `Rotate ${Math.abs(jogDeg).toFixed(1)}° ${dir}` : 'Coarse jog to centre';
 }
 
 function updateHint() {
@@ -1037,7 +1074,9 @@ document.getElementById('panApplyErr').onclick = () => {
   if (alignErrorDeg == null) return;
   const jogDeg = -alignErrorDeg;       // measured on hardware — see panUpdateAlignError()
   if (Math.abs(jogDeg) > 45) return;   // belt-and-suspenders; button is disabled past the cap
+  panLastJogDir = jogDeg >= 0 ? 1 : -1;   // for the monotonic/backlash warning
   panJog(Math.round(jogDeg / PAN_DEG_PER_STEP));
+  panUpdateAlignError();                  // refresh the reversal note immediately
 };
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
 

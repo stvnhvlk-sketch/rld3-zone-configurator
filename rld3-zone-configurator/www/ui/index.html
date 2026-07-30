@@ -114,6 +114,9 @@
     <button data-mode="sensor">Place Sensor</button>
     <button data-mode="align">You Are Here</button>
     <button data-mode="pan" class="on">Pan</button>
+    <!-- Mirrors the Clear dot button down in the align panel (~56 lines away):
+         create and remove belong within reach of each other. -->
+    <button id="alignClear2" title="Remove the You Are Here dot">Clear dot</button>
   </div>
   <div class="row">
     <button id="finish">Finish (Enter)</button>
@@ -125,15 +128,21 @@
 
   <h2>Mounting</h2>
   <div class="row">
-    <label>Yaw °<input type="number" id="yaw" value="0" step="0.1" min="-180" max="180" /></label>
+    <label>Yaw °<input type="number" id="yaw" value="0" step="0.1" min="-180" max="180" title="The direction you want the sensor to face. Aim it visually in Place Sensor mode by dragging the handle at the end of the aim line; type here for an exact value." /></label>
+  </div>
+  <div style="font-size:11px; color:#8a97a8; margin:-2px 0 6px">
+    Aim the <span style="color:#7dd3fc">optimal ±45°</span> cone in <b>Place Sensor</b> mode
+    (drag the handle on the aim line) — that is what sets Yaw.
   </div>
   <div class="row">
     <label><input type="checkbox" id="inverted" /> Inverted (ceiling)</label>
   </div>
 
   <!-- Motorized yaw alignment. Canonical design: _Documentation/RLD3Target-auto-align.md
-       (pan-align-design.md is superseded). The motor does COARSE FOV centering
-       only — software owns the exact angle via "Apply suggested yaw".
+       (pan-align-design.md is superseded). The motor closes the WHOLE error:
+       yaw is the operator's intent, aimed with the optimal-FOV cone in Place
+       Sensor mode, and nothing here rewrites it (§11's software-owns-the-exact-
+       angle split no longer applies — see panUpdateAlignError).
        "Yaw Align", not "Pan Align": the goal is correcting the mounting YAW.
        "Pan" is reserved for the MAP navigation mode above — the two used to
        collide in this same sidebar. The motor primitive stays pan_jog/pan_stop
@@ -159,28 +168,53 @@
     <span style="color:#8a97a8; font-size:11px">max 45° per press</span>
   </div>
   <div id="panStatus" title="Radar read of the target position (room frame). Stand at a known spot and jog until this matches where you are." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px">target: — (live view off)</div>
-  <div class="row" style="gap:8px; align-items:center">
-    <button id="panApplyErr" title="Jog the pan motor to close the bearing error between the detected target and the You Are Here dot" disabled>Jog to align</button>
+  <!-- Step 1 of 2. This box and the alignStatus box below are DIFFERENT
+       corrections that both read the same bearing error, and their empty states
+       used to be near-identical sentences — they read as one duplicated window.
+       Caption both so which is which is legible before either has data. -->
+  <div style="font-size:11px; color:#8a97a8; margin:8px 0 4px">
+    <b style="color:#cbd5e1">Step 1 · Physical</b> — rotate the sensor head. Coarse only; get the room near boresight.
   </div>
-  <div id="panErrStatus" title="Bearing error between the You Are Here dot and the live detected target, and the pan jog that would close it. Place You Are Here and stand in view to use." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">place "You Are Here" and stand where the sensor can see you</div>
+  <div class="row" style="gap:8px; align-items:center">
+    <button id="panApplyErr" title="MOVES THE MOTOR. Jogs the pan head to close the bearing error between the detected target and the You Are Here dot." disabled>Jog to align</button>
+  </div>
+  <div id="panErrStatus" title="Bearing error between the You Are Here dot and the live detected target, and the physical pan jog that would close it. Place You Are Here and stand in view to use." style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">motor jog: place "You Are Here" and stand where the sensor can see you</div>
 
   <!-- "You Are Here" — place where you're actually standing, compare against the
        live detected target, and read the yaw correction directly instead of
        computing it by hand. See _Documentation/RLD3Target-auto-align.md §12. -->
+  <!-- Deliberately NO "apply suggested yaw" here. Yaw is the operator's INTENT,
+       set by aiming the optimal-FOV cone in Place Sensor mode; letting a
+       measurement overwrite it would silently discard the aim the layout was
+       designed around. This readout only measures how far the physical head is
+       off that intent — closing it is Step 1's job. -->
+  <div style="font-size:11px; color:#8a97a8; margin:8px 0 4px">
+    <b style="color:#cbd5e1">Step 2 · Check</b> — nothing moves and nothing is changed. Measures how far
+    the head is off the aim you set with the FOV cone.
+  </div>
   <div class="row" style="gap:8px; align-items:center">
     <button id="alignClear" title="Remove the You Are Here dot">Clear dot</button>
-    <button id="alignApply" title="Copy the suggested yaw into the Yaw field above (still requires Write to sensor)" disabled>Apply suggested yaw</button>
   </div>
-  <div id="alignStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">place "You Are Here", then stand where the sensor can see you</div>
+  <div id="alignStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">yaw angle: place "You Are Here", then stand where the sensor can see you</div>
 
   <h2>Validation</h2>
   <div id="status">—</div>
 
-  <h2>Layout I/O</h2>
+  <!-- GEOMETRY ONLY — deliberately not called a backup. toolToJSON() captures the
+       sensor mount + polygons + exclusion rects and nothing else; per-zone tuning
+       (entry/exit frames, hold_min, stat_*), pool tuning (smoothing,
+       static_hold_timeout_min, target_persistence_s, miss_grace_s) and auto_reset_s
+       all live on the device and are NOT here. The bench device's tuning is
+       genuinely non-uniform, so "restore from export" would silently lose it. -->
+  <h2>Layout I/O <span style="font-weight:normal; font-size:11px; opacity:.7">(geometry only — not a device backup)</span></h2>
   <div class="row">
-    <button id="export">Export JSON</button>
-    <button id="import">Import JSON</button>
+    <button id="export" title="Save the LAYOUT: sensor mount, polygons and exclusion rects. Does NOT capture the device's tuning (entry/exit frames, hold_min, smoothing, persistence, miss grace, auto reset) — those stay on the sensor and are not restored by an import.">Export Layout JSON</button>
+    <button id="import" title="Load a layout previously exported here. Restores geometry and mount only — device tuning is untouched.">Import Layout JSON</button>
     <button id="z2m">Preview write commands (debug)</button>
+  </div>
+  <div style="font-size:11px; opacity:.75; margin-bottom:6px">
+    Captures mount + zone geometry. Device tuning (entry/exit frames, hold_min,
+    smoothing, persistence, miss grace, auto reset) is <b>not</b> included.
   </div>
   <textarea id="io" placeholder="Exported layout / Z2M sets appear here; paste to import."></textarea>
 </div>
@@ -310,6 +344,7 @@ let panLast = null;
 let rectDragOrig = null;     // { rect, startSensor } while moving an exclusion body
 let polyDragOrig = null;     // { verts, start } while moving a whole polygon zone
 let sensorPlacing = false;   // dragging the sensor in 'sensor' mode
+let sensorAiming = false;    // dragging the boresight handle in 'sensor' mode (sets yaw)
 
 // "You Are Here" — the operator's stated position, ABSOLUTE frame (same as
 // polys). Session-only: NOT saved to layout, NOT written to the device — it is
@@ -498,13 +533,38 @@ function drawEnvelope() {
   drawRegion(SWEET_ENVELOPE, 'rgba(56,189,248,0.07)', 'rgba(125,211,252,0.6)');  // cyan = optimal
 }
 
+// Boresight tip in room mm. Sensor-frame (0, AIM_LEN_MM) — x is 0, so the
+// inversion flag cannot affect it and the bearing is purely yaw + 90°.
+const AIM_LEN_MM = 1500;
+const AIM_GRAB_PX = 14;
+function aimTipAbs() { return sensorToAbs({ x: 0, y: AIM_LEN_MM }); }
+
 function drawSensor() {
   const o = w2s({ x: sensor.x, y: sensor.y });
-  const tip = w2s(sensorToAbs({ x: 0, y: 1500 }));
+  const tip = w2s(aimTipAbs());
   ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(o.sx, o.sy); ctx.lineTo(tip.sx, tip.sy); ctx.stroke();
+  // In Place Sensor mode the boresight tip is a grab handle: dragging it aims the
+  // optimal-FOV cone, which is how yaw is set. Draw it so the affordance exists.
+  if (mode === 'sensor') {
+    ctx.beginPath(); ctx.arc(tip.sx, tip.sy, 6, 0, Math.PI * 2);
+    ctx.fillStyle = sensorAiming ? '#fbbf24' : '#11161d';
+    ctx.fill();
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.stroke();
+  }
   ctx.fillStyle = mode === 'sensor' ? '#fbbf24' : '#e2e8f0';
   ctx.beginPath(); ctx.arc(o.sx, o.sy, mode === 'sensor' ? 7 : 5, 0, Math.PI * 2); ctx.fill();
+}
+
+/* Aim the cone at a room point: yaw is whatever makes boresight pass through it.
+ * Boresight in room coords is (-L·sin yaw, L·cos yaw), so its bearing is
+ * yaw + 90° — invert that. A point on the sensor itself has no bearing; ignore. */
+function aimSensorAt(wp) {
+  const dx = wp.x - sensor.x, dy = wp.y - sensor.y;
+  if (dx === 0 && dy === 0) return;
+  const bearingDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+  mount.yawDeciDeg = Math.round(wrapDeg(bearingDeg - 90) * 10);
+  document.getElementById('yaw').value = (mount.yawDeciDeg / 10).toFixed(1);
 }
 
 function drawZone(z) {
@@ -564,6 +624,11 @@ function evWorld(e) {
   const r = cv.getBoundingClientRect();
   return screenToWorld(vp, { sx: e.clientX - r.left, sy: e.clientY - r.top });
 }
+/** Pointer position in CANVAS pixels — hit-testing screen-sized handles. */
+function evScreen(e) {
+  const r = cv.getBoundingClientRect();
+  return { sx: e.clientX - r.left, sy: e.clientY - r.top };
+}
 function round(p) { return { x: Math.round(p.x), y: Math.round(p.y) }; }
 
 /** Even-odd point-in-polygon for float {x,y} room corners (exclusion body hit). */
@@ -610,7 +675,7 @@ function pinchState() {
 
 function beginPinch() {
   if (gestureUndo) { gestureUndo(); gestureUndo = null; }
-  dragging = false; panLast = null; sensorPlacing = false; alignPlacing = false;
+  dragging = false; panLast = null; sensorPlacing = false; sensorAiming = false; alignPlacing = false;
   rectDragOrig = null; polyDragOrig = null;
   pinch = pinchState();
   draw();
@@ -626,6 +691,21 @@ cv.addEventListener('pointerdown', (e) => {
   const wp = evWorld(e);
   if (mode === 'pan' || e.button === 1) { panLast = { x: e.clientX, y: e.clientY }; return; }
   if (mode === 'sensor') {
+    // Grab the boresight handle → aim; anywhere else → move. Aiming the cone IS
+    // how yaw is set: the operator points the optimal FOV where they want it
+    // covered, and that intent is what the sensor is then physically rotated to
+    // match (Yaw Align). Nothing downstream rewrites it.
+    const tip = w2s(aimTipAbs());
+    const sp = evScreen(e);
+    if (Math.hypot(sp.sx - tip.sx, sp.sy - tip.sy) <= AIM_GRAB_PX) {
+      const prevYaw = mount.yawDeciDeg;
+      gestureUndo = () => {
+        mount.yawDeciDeg = prevYaw;
+        document.getElementById('yaw').value = (prevYaw / 10).toFixed(1);
+      };
+      sensorAiming = true; dragging = true;
+      aimSensorAt(wp); draw(); return;
+    }
     const prev = { x: sensor.x, y: sensor.y };
     gestureUndo = () => { sensor.x = prev.x; sensor.y = prev.y; };
     sensor.x = Math.round(wp.x); sensor.y = Math.round(wp.y);
@@ -709,6 +789,7 @@ cv.addEventListener('pointermove', (e) => {
   }
   if (!dragging) return;
   gestureUndo = null;        // a real drag — the initial commit was intended
+  if (sensorAiming) { aimSensorAt(evWorld(e)); draw(); return; }
   if (sensorPlacing) { const w = evWorld(e); sensor.x = Math.round(w.x); sensor.y = Math.round(w.y); draw(); return; }
   if (alignPlacing) {
     const w = evWorld(e);
@@ -756,8 +837,14 @@ function endPointer(e) {
     const r = rects[activeId];
     rects[activeId] = norm({ x: r.x1, y: r.y1 }, { x: r.x2, y: r.y2 });
   }
-  dragging = false; panLast = null; rectDragOrig = null; polyDragOrig = null; sensorPlacing = false;
-  alignPlacing = false;
+  dragging = false; panLast = null; rectDragOrig = null; polyDragOrig = null; sensorPlacing = false; sensorAiming = false;
+  // "You Are Here" is ONE-SHOT: placing the dot returns to Pan. The mode used to
+  // be sticky and act on pointerdown, so every later canvas click silently moved
+  // a carefully-placed dot — there was no safe click and no exit near the readout
+  // you work in. Drag-to-refine still works inside this one gesture; adjusting
+  // afterwards means clicking the mode button again. Deliberate: the dot's job is
+  // to mark one spot accurately.
+  if (alignPlacing) { alignPlacing = false; setMode('pan'); }
 }
 window.addEventListener('pointerup', endPointer);
 window.addEventListener('pointercancel', endPointer);
@@ -829,52 +916,50 @@ function refreshStatus() {
 // "current yaw + bearing gap" holds regardless of the inverted flag.
 function wrapDeg(d) { return ((d + 180) % 360 + 360) % 360 - 180; }
 
-let alignSuggestedYawDeg = null;   // stashed by alignUpdate() for the Apply button
 let alignErrorDeg = null;          // stashed by alignUpdate() for panUpdateAlignError()
 
 function alignUpdate() {
   const box = document.getElementById('alignStatus');
-  const btn = document.getElementById('alignApply');
-  if (!box || !btn) { panUpdateAlignError(); return; }   // called before DOM ready during early draw()s
+  if (!box) { panUpdateAlignError(); return; }   // called before DOM ready during early draw()s
 
   if (!alignTarget) {
-    box.textContent = 'place "You Are Here", then stand where the sensor can see you';
-    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
+    box.textContent = 'yaw angle: place "You Are Here", then stand where the sensor can see you';
+    alignErrorDeg = null; panUpdateAlignError(); return;
   }
 
   const rel = { x: alignTarget.x - sensor.x, y: alignTarget.y - sensor.y };
   const betaStated = Math.atan2(rel.y, rel.x) * 180 / Math.PI;
+  // Show the dot's room coordinates, not just bearings: at a working zoom one
+  // pixel is several mm, so eyeballing the dot cannot confirm placement — and a
+  // bumped dot was invisible. These numbers are how you check it landed.
+  const dotLine = `dot ${alignTarget.x}, ${alignTarget.y} mm (room)\n`;
 
   if (!liveOn) {
-    box.textContent = `stated ${betaStated.toFixed(1)}°\nturn on Live view to compare against the detected target`;
-    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
+    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\nturn on Live view to compare against the detected target`;
+    alignErrorDeg = null; panUpdateAlignError(); return;
   }
   const present = liveTargets.filter(Boolean);
   if (present.length === 0) {
-    box.textContent = `stated ${betaStated.toFixed(1)}°\nno target detected — stand where the sensor can see you`;
-    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
+    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\nno target detected — stand where the sensor can see you`;
+    alignErrorDeg = null; panUpdateAlignError(); return;
   }
   if (present.length > 1) {
-    box.textContent = `stated ${betaStated.toFixed(1)}°\n${present.length} targets detected — only one person should be in view`;
-    btn.disabled = true; alignSuggestedYawDeg = null; alignErrorDeg = null; panUpdateAlignError(); return;
+    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\n${present.length} targets detected — only one person should be in view`;
+    alignErrorDeg = null; panUpdateAlignError(); return;
   }
 
   const t = present[0];
   const betaDisplayed = Math.atan2(t.y, t.x) * 180 / Math.PI;
   const errorDeg = wrapDeg(betaStated - betaDisplayed);
-  const yawNow = mount.yawDeciDeg / 10;
-  const suggested = wrapDeg(yawNow + errorDeg);
-  box.textContent =
+  box.textContent = dotLine +
     `stated ${betaStated.toFixed(1)}° · detected ${betaDisplayed.toFixed(1)}°\n` +
-    `error ${errorDeg >= 0 ? '+' : ''}${errorDeg.toFixed(1)}° · suggested yaw ${suggested.toFixed(1)}° (now ${yawNow.toFixed(1)}°)`;
-  btn.disabled = false;
-  alignSuggestedYawDeg = suggested;
+    `off by ${errorDeg >= 0 ? '+' : ''}${errorDeg.toFixed(1)}° — rotate the head (Step 1) to close it`;
   alignErrorDeg = errorDeg;
   panUpdateAlignError();
 }
 
 /* Pan-align bearing error → jog. Reuses alignUpdate()'s errorDeg (same "You Are
- * Here" vs detected-target bearing gap the Apply-suggested-yaw button uses) but
+ * Here" vs detected-target bearing gap the Step 2 check reports) but
  * converts it to a PHYSICAL pan jog instead of a software yaw edit.
  *
  * Sign: MEASURED ON HARDWARE, not derived. Bench run 2026-07-27
@@ -904,9 +989,14 @@ function alignUpdate() {
  * so slack is taken up once and never reopens, and its value never needs to be
  * known. A button that always jogs "whichever way closes the error" breaks
  * that the moment noise flips the sign, so it tracks the last direction and
- * says so rather than silently eating slack. The exact angle is owned by
- * "Apply suggested yaw" (software) — the motor only needs to get the target
- * roughly centred in the FOV. */
+ * says so rather than silently eating slack.
+ *
+ * NOTE — this inverts auto-align.md §11's division of labour (2026-07-29). There,
+ * the motor coarse-centred and software owned the exact angle. Yaw is now the
+ * operator's INTENT, aimed with the optimal-FOV cone, so no software correction
+ * is applied on top: closing the residual is the MOTOR's job, via Fine jog. That
+ * makes backlash and step-loss matter more than §11 assumed — they are no longer
+ * absorbed by a computed angle. */
 let panLastJogDir = 0;          // +1 CW, -1 CCW, 0 = none yet this session
 
 function panUpdateAlignError() {
@@ -915,7 +1005,7 @@ function panUpdateAlignError() {
   if (!box || !btn) return;   // called before DOM ready during early draw()s
 
   if (alignErrorDeg == null) {
-    box.textContent = 'place "You Are Here" and stand where the sensor can see you';
+    box.textContent = 'motor jog: place "You Are Here" and stand where the sensor can see you';
     btn.disabled = true; btn.textContent = 'Coarse jog to centre';
     return;
   }
@@ -948,7 +1038,7 @@ function updateHint() {
     h = isRect ? 'Edit: drag a corner handle to resize, or drag inside the box to move it.'
                : 'Edit: drag a vertex, drag inside to move the zone, click an edge to add a vertex, Del removes.';
   } else if (mode === 'sensor') {
-    h = 'Sensor: click or drag to place the sensor; set Yaw / Inverted to aim its field of view.';
+    h = 'Place Sensor: drag the sensor dot to position it; drag the handle at the end of its aim line to point the optimal FOV where you want coverage — that sets Yaw.';
   } else if (mode === 'align') {
     h = 'You Are Here: click or drag to mark where you are standing, then read the yaw correction below.';
   } else {
@@ -1050,12 +1140,15 @@ function updateZoneBadges() {
     else dot.removeAttribute('data-s');
   });
 }
-document.getElementById('modes').onclick = (e) => {
-  if (!e.target.dataset.mode) return;
-  mode = e.target.dataset.mode; draft = []; selVert = -1;
-  [...e.currentTarget.children].forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+function setMode(m) {
+  mode = m; draft = []; selVert = -1;
+  [...document.getElementById('modes').children].forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
   cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';
   draw();
+}
+document.getElementById('modes').onclick = (e) => {
+  if (!e.target.dataset.mode) return;
+  setMode(e.target.dataset.mode);
 };
 document.getElementById('finish').onclick = finishDraft;
 document.getElementById('clearZone').onclick = () => {
@@ -1063,13 +1156,9 @@ document.getElementById('clearZone').onclick = () => {
 };
 // Field is in DEGREES (intuitive); the wire attr 0x0100 is 0.1° units, so store deci-degrees.
 document.getElementById('yaw').oninput = (e) => { mount.yawDeciDeg = Math.round((parseFloat(e.target.value) || 0) * 10); draw(); };
-document.getElementById('alignClear').onclick = () => { alignTarget = null; draw(); };
-document.getElementById('alignApply').onclick = () => {
-  if (alignSuggestedYawDeg == null) return;
-  mount.yawDeciDeg = Math.round(alignSuggestedYawDeg * 10);
-  document.getElementById('yaw').value = (mount.yawDeciDeg / 10).toFixed(1);
-  draw();   // still requires the normal Write-to-sensor step to reach the device
-};
+const clearAlignDot = () => { alignTarget = null; draw(); };
+document.getElementById('alignClear').onclick = clearAlignDot;
+document.getElementById('alignClear2').onclick = clearAlignDot;
 document.getElementById('panApplyErr').onclick = () => {
   if (alignErrorDeg == null) return;
   const jogDeg = -alignErrorDeg;       // measured on hardware — see panUpdateAlignError()
@@ -1158,7 +1247,11 @@ document.getElementById('mqConnect').onclick = async () => {
       if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
       if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); panUpdateReadout(); }
     });
-    setMq(`connected · sensor "${device}"`, 'ok');
+    // Connect only proves the BROKER answered — the sensor may be unpowered or
+    // unreachable over Zigbee and nothing here would notice. Don't claim the
+    // sensor until it answers a read; the read's own reply check settles it.
+    setMq(`broker connected · checking sensor "${device}" …`);
+    setTimeout(() => document.getElementById('mqRead').click(), 100);
   } catch (e) {
     z2mAdapter = null;
     setMq('connect failed: ' + e.message, 'err');
@@ -1260,6 +1353,21 @@ document.getElementById('mqRead').onclick = () => {
   for (const k of blobKeys) z2mAdapter.readKeys([k]);
 
   setTimeout(() => {
+    // Silence is the one answer we must not read as data. An unpowered board or a
+    // broken Zigbee route looks exactly like a working device with nothing to say,
+    // and every downstream step (baseline, badges, write diff) would then treat
+    // "no reply" as "device is empty". Fail loud and change nothing.
+    if (Object.keys(deviceReports).length === 0) {
+      const wasWrite = pendingConfirm, wasDelete = pendingDelete;
+      pendingConfirm = null; pendingDelete = null;
+      let msg = `broker connected · sensor "${liveDevice}" NOT RESPONDING — no reply to the read.\n`
+              + 'Check the board is powered and joined; nothing was loaded or changed here.';
+      if (wasWrite) msg += '\n⚠ the preceding write is UNCONFIRMED.';
+      if (wasDelete) msg += '\n⚠ the preceding delete is UNCONFIRMED.';
+      setMq(msg, 'err');
+      return;
+    }
+
     const { layout, zoneStates: states, warnings } = layoutFromReports(deviceReports);
 
     // Place sensor at origin — device polygons are room-frame at sensor origin → 1:1 absolute.
@@ -1305,7 +1413,7 @@ document.getElementById('mqRead').onclick = () => {
     deviceBaselineLayout = JSON.parse(JSON.stringify(layout));
 
     const note = warnings.length ? ' · ' + warnings.join('; ') : '';
-    setMq('read complete' + note, warnings.length ? '' : 'ok');
+    setMq(`read complete · sensor "${liveDevice}" responding` + note, warnings.length ? '' : 'ok');
     draw();
 
     // Live view follows a read (which Connect also triggers) — the user gets the

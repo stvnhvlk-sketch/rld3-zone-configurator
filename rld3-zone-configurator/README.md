@@ -31,6 +31,27 @@ on port **1884**), Connect, then draw → Provision. See the configurator
 > Casa / a TLS reverse proxy), browsers block insecure `ws://` from an `https://`
 > page — use a `wss://` broker endpoint in that case.
 
+## What's new
+
+### 0.5.0 — yaw is the aim you set
+
+- **"Apply suggested yaw" is gone.** Yaw is now the aim you author in the layout,
+  not a value derived from a measurement. Place the sensor, then **drag the handle
+  at the end of its aim line** (Place Sensor mode) to point the optimal ±45° cone
+  where you want coverage — that sets Yaw. The Yaw field is still typeable.
+  Yaw Align's job is to rotate the physical head to match; its readout is now a
+  read-only check that reports how far off the head is.
+- **"You Are Here" is one-shot.** Placing the dot returns to Pan, so a later
+  canvas click can no longer nudge it. The readout shows the dot's room
+  coordinates, and Clear dot is duplicated next to the mode button.
+- **Connect no longer over-claims.** It verifies with a read; if the sensor
+  doesn't answer you get "sensor not responding" instead of a green "connected"
+  for what is really just a reachable broker.
+- **Live view no longer freezes after a Read** (two MQTT message handlers were
+  silently evicting each other).
+- **Export is labelled "Export Layout JSON"** — it captures mount + zone geometry
+  only, *not* device tuning. It is not a device backup.
+
 ## Updating
 
 The web assets are vendored under `www/`. After changing

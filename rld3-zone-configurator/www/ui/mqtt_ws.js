@@ -37,7 +37,11 @@ export function mqttConnect(opts) {
     ws.binaryType = 'arraybuffer';
 
     let buf = new Uint8Array(0);
-    let messageHandler = null;
+    // A LIST, not a single slot: the live-view dispatcher and the z2m adapter's
+    // transport.subscribe each install one. A single slot let whichever ran last
+    // silently evict the other — a Read after connect killed the live-target
+    // stream with no error.
+    const messageHandlers = [];
     let pingTimer = null;
     let settled = false;
 
@@ -78,7 +82,14 @@ export function mqttConnect(opts) {
         send(packet(0x30, [...encStr(topic), ...m]));
       },
       subscribe(topic) { send(packet(0x82, [0, 1, ...encStr(topic), 0])); },
-      onMessage(cb) { messageHandler = cb; },
+      /** Add a message listener. Returns a function that removes it again. */
+      onMessage(cb) {
+        messageHandlers.push(cb);
+        return () => {
+          const i = messageHandlers.indexOf(cb);
+          if (i >= 0) messageHandlers.splice(i, 1);
+        };
+      },
       end() { try { send(new Uint8Array([0xE0, 0x00])); } catch (_) {} ws.close(); },
     };
 
@@ -98,7 +109,8 @@ export function mqttConnect(opts) {
         const tlen = (payload[0] << 8) | payload[1];
         const topic = TD.decode(payload.subarray(2, 2 + tlen));
         const msg = TD.decode(payload.subarray(2 + tlen));
-        if (messageHandler) messageHandler(topic, msg);
+        // Copy first: a handler may add/remove listeners while dispatching.
+        for (const h of messageHandlers.slice()) h(topic, msg);
       }
       /* SUBACK (9), PINGRESP (13) ignored */
     }

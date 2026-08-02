@@ -1207,6 +1207,22 @@ document.getElementById('import').onclick = () => {
 // --- Live device provisioning (MQTT over WebSocket) ----------------------------
 let z2mAdapter = null, z2mClient = null;
 let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null, liveAutoOff = null;
+/* liveOn is this tool's INTENT, and only setLive() may change it.
+ *
+ * Z2M's `live_view` is a CACHE, not the device. The underlying attribute
+ * (ATTR_CONFIG_MODE 0x0104) is volatile AND not reportable, so after a device
+ * reboot the device is off while Z2M keeps serving the pre-reboot 'ON' forever
+ * — its state is additive and never expires keys. Adopting that value used to
+ * revert the operator's own toggle within ~100 ms, and worse, left this tool
+ * believing live view was already on so it never sent the enabling write:
+ * live view could then be neither turned off NOR on. See TODO RLD3-022.
+ *
+ * liveReported is what the cache last claimed, kept only to show disagreement
+ * and to drive a bounded corrective re-write. The device LED (dim blue =
+ * streaming) is the only ground truth. */
+let liveReported = null, liveReassertAt = 0, liveReassertCount = 0;
+const LIVE_REASSERT_MS = 10000;   /* don't re-write faster than this */
+const LIVE_REASSERT_MAX = 3;      /* then stop and just warn, rather than loop */
 // Auto-off is a safety stop, not a UX limit: if the user forgets Live view on, it
 // otherwise polls `/get` every 300ms forever, spamming the MQTT bus. 30 min is far
 // longer than any real config session, so it never interrupts legitimate use.
@@ -1244,7 +1260,7 @@ document.getElementById('mqConnect').onclick = async () => {
       if (tp !== `zigbee2mqtt/${device}`) return;
       let s; try { s = JSON.parse(raw); } catch { return; }
       Object.assign(deviceReports, s);  // accumulate for Read from device
-      if (s.live_view != null) { liveOn = (s.live_view === 'ON' || s.live_view === true); updateLiveBtn(); }
+      if (s.live_view != null) reconcileLiveView(s.live_view === 'ON' || s.live_view === true);
       if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); panUpdateReadout(); }
     });
     // Connect only proves the BROKER answered — the sensor may be unpowered or
@@ -1449,14 +1465,53 @@ document.getElementById('mqRead').onclick = () => {
 
 const mqLive = document.getElementById('mqLive');
 function updateLiveBtn() {
-  mqLive.textContent = liveOn ? 'Live view: ON' : 'Live view: OFF';
+  const mismatch = (liveReported !== null && liveReported !== liveOn);
+  mqLive.textContent = (liveOn ? 'Live view: ON' : 'Live view: OFF') + (mismatch ? ' ⚠' : '');
   mqLive.style.color = liveOn ? '#22d3ee' : '';
+  mqLive.title = mismatch
+    ? `Z2M reports the device is ${liveReported ? 'ON' : 'OFF'}, which disagrees with this setting.\n`
+      + 'Z2M caches live_view and it goes stale after a device reboot (the attribute is '
+      + 'volatile and not reportable), so this tool trusts your setting, not the cache.\n'
+      + 'Ground truth is the sensor LED: dim blue = actually streaming.'
+    : '';
   panUpdateReadout();   // target readout depends on live view being on
+}
+
+/* Reconcile the cached live_view against our intent — never adopt it.
+ *
+ * On disagreement, re-assert our intent instead of surrendering to the cache.
+ * That converges both directions: a stale 'ON' after a reboot gets written back
+ * to OFF (and the converter's optimistic state updates the cache), and a device
+ * that genuinely dropped out gets re-enabled — the same self-healing the 12-min
+ * keepalive provides, just event-driven.
+ *
+ * Bounded deliberately. If the write cannot land at all — e.g. a stale Zigbee
+ * source route, which is exactly how this failure presented on 2026-08-02 — the
+ * cache never changes and an unbounded retry would spam the bus at the device's
+ * republish rate. After LIVE_REASSERT_MAX attempts it stops and leaves the ⚠
+ * showing, which is the honest outcome: the tool cannot fix a broken route, and
+ * pretending otherwise by retrying forever hides it. */
+function reconcileLiveView(reported) {
+  liveReported = reported;
+  if (reported === liveOn) { liveReassertCount = 0; updateLiveBtn(); return; }
+  updateLiveBtn();                       // surface the ⚠ immediately
+  if (!z2mClient || !liveDevice) return;
+  if (liveReassertCount >= LIVE_REASSERT_MAX) return;
+  const now = Date.now();
+  if (now - liveReassertAt < LIVE_REASSERT_MS) return;
+  liveReassertAt = now; liveReassertCount++;
+  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`,
+                    JSON.stringify({ live_view: liveOn ? 'ON' : 'OFF' }));
+  setMq(`live view: device reports ${reported ? 'ON' : 'OFF'}, re-asserting `
+        + `${liveOn ? 'ON' : 'OFF'} (${liveReassertCount}/${LIVE_REASSERT_MAX})`, '');
 }
 function setLive(on) {
   if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
   z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: on ? 'ON' : 'OFF' }));
-  liveOn = on; updateLiveBtn();
+  /* Fresh intent: allow the corrective re-writes again. Without this reset a
+   * session that exhausted its budget fighting a stale cache would never
+   * re-assert for a later, legitimate toggle. */
+  liveOn = on; liveReassertAt = 0; liveReassertCount = 0; updateLiveBtn();
   if (liveKeepAlive) { clearInterval(liveKeepAlive); liveKeepAlive = null; }
   if (livePoll) { clearInterval(livePoll); livePoll = null; }
   if (liveAutoOff) { clearTimeout(liveAutoOff); liveAutoOff = null; }

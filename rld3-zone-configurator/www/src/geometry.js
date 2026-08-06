@@ -112,3 +112,51 @@ export function sensorRectToRoomQuad(sensorRect, mount = {}) {
     { x: sensorRect.x1, y: sensorRect.y2 },
   ].map((c) => sensorToRoom(c, mount));
 }
+
+/**
+ * Even-odd point-in-polygon test for float {x,y} vertices.
+ *
+ * Shared so there is ONE implementation: `ui/index.html` used to carry its own
+ * copy for exclusion-body hit-testing, and a second copy added for live-target
+ * plausibility would have been free to drift from it.
+ *
+ * @param {{x:number,y:number}[]} pts polygon vertices, any winding
+ * @param {{x:number,y:number}} p point to test
+ * @returns {boolean} true if p is inside pts
+ */
+export function pointInPolygon(pts, p) {
+  if (!Array.isArray(pts) || pts.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if (((a.y > p.y) !== (b.y > p.y)) &&
+        (p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x)) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Is a live target somewhere a person cannot be — outside the room itself?
+ *
+ * The master zone is the strongest plausibility test the system has, and on
+ * 2026-08-06 it was not applied to the live view: a track at room (-3308, 441)
+ * was drawn as an ordinary target while being **outside the building**, on the
+ * second floor (RLD3-029). The operator spotted it by eye; nothing in the
+ * interface said anything.
+ *
+ * Returns false when there is no master polygon — an unprovisioned room must not
+ * make every target look implausible. "Unknown" is not "outside".
+ *
+ * NOTE this is for FLAGGING, never for hiding. A target outside the room is the
+ * most diagnostic thing on the canvas; suppressing it would have removed the
+ * very evidence that found the defect. See the call site in index.html.
+ *
+ * @param {{x:number,y:number}} pointAbs target position, ABSOLUTE room frame
+ *        (i.e. sensor origin already added)
+ * @param {{x:number,y:number}[]|null|undefined} masterVertices room polygon
+ * @returns {boolean} true only when a master polygon exists AND p is outside it
+ */
+export function isTargetOutsideRoom(pointAbs, masterVertices) {
+  if (!Array.isArray(masterVertices) || masterVertices.length < 3) return false;
+  return !pointInPolygon(masterVertices, pointAbs);
+}

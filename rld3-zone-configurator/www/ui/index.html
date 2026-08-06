@@ -237,7 +237,9 @@ import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_loa
 import { markProvisioned } from '../src/layout_edit.js';
 import { planFromLayouts, confirmPlan } from '../src/provision_glue.js';
 import { mqttConnect } from './mqtt_ws.js';
-import { sensorToRoom, roomToSensor } from '../src/geometry.js';
+import {
+  sensorToRoom, roomToSensor, pointInPolygon, isTargetOutsideRoom,
+} from '../src/geometry.js';
 import {
   SENSOR_RANGE_R, SENSOR_RANGE_X, SENSOR_CONE_SWEET_DEG, SENSOR_FOV_FULL_DEG,
   SENSOR_RANGE_CURVE,
@@ -472,12 +474,30 @@ let liveTargets = [];
 // liveTargets is the converter-decoded `targets` array from the device state
 // topic: 3 slots of { x, y } mm in the post-mount room frame, empty slots null.
 function drawLiveTargets() {
+  // A target outside the master zone cannot be a person (RLD3-029). On
+  // 2026-08-06 one was drawn as an ordinary dot while being OUTSIDE THE
+  // BUILDING, on the second floor; the operator caught it by eye and nothing in
+  // the interface said a word. Flagged, never hidden: an implausible target is
+  // the most diagnostic thing on this canvas, and suppressing it would remove
+  // the evidence that found the defect.
+  const master = polys.master;
   for (const t of liveTargets) {
     if (!t) continue;
-    const s = w2s({ x: sensor.x + t.x, y: sensor.y + t.y });
+    const abs = { x: sensor.x + t.x, y: sensor.y + t.y };
+    const s = w2s(abs);
+    const bad = isTargetOutsideRoom(abs, master);
     ctx.beginPath(); ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#22d3ee'; ctx.fill();
-    ctx.lineWidth = 1.5; ctx.strokeStyle = '#0e7490'; ctx.stroke();
+    ctx.fillStyle = bad ? '#f87171' : '#22d3ee'; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = bad ? '#b91c1c' : '#0e7490'; ctx.stroke();
+    if (!bad) continue;
+    // Dashed halo + label, so it reads as "this cannot be real" at a glance
+    // rather than as one dot among several identical ones.
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, 13, 0, Math.PI * 2);
+    ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#f87171';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText('outside room', s.sx + 16, s.sy + 4);
   }
 }
 
@@ -631,16 +651,11 @@ function evScreen(e) {
 }
 function round(p) { return { x: Math.round(p.x), y: Math.round(p.y) }; }
 
-/** Even-odd point-in-polygon for float {x,y} room corners (exclusion body hit). */
-function pointInPoly(pts, p) {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const a = pts[i], b = pts[j];
-    if (((a.y > p.y) !== (b.y > p.y)) &&
-        (p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x)) inside = !inside;
-  }
-  return inside;
-}
+/** Even-odd point-in-polygon for float {x,y} room corners (exclusion body hit).
+ *  Delegates to the shared implementation in src/geometry.js — the live-target
+ *  plausibility check needs the same test, and two copies would be free to
+ *  drift apart. */
+function pointInPoly(pts, p) { return pointInPolygon(pts, p); }
 
 function updateCoords(e) {
   const w = evWorld(e);

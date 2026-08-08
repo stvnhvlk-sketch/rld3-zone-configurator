@@ -16,16 +16,22 @@
 import { encodePolygon, validatePolygon, DEFAULT_MAX_VERTICES } from './polygon_codec.js';
 import { encodeExclusion } from './exclusion_codec.js';
 import {
-  ATTR_YAW_TENTHS, ATTR_INVERTED, ATTR_POLY_MASTER, ATTR_POLY_PRES, ATTR_POLY_EZ,
+  ATTR_YAW_TENTHS, ATTR_INVERTED, ATTR_MOUNT_OFFSET_X_MM, ATTR_MOUNT_OFFSET_Y_MM,
+  ATTR_POLY_MASTER, ATTR_POLY_PRES, ATTR_POLY_EZ,
   ATTR_EXCL, PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
 } from './attributes.js';
+
+/* Sensor room-space offset bound (mm) — mirrors mount_angle_nvs.c's
+ * MOUNT_OFFSET_MM_MAX, the same ±10000 mm bound every position input in the
+ * architecture already uses (3T-mounting.md §6). */
+const MOUNT_OFFSET_MM_MAX = 10000;
 
 export const LAYOUT_VERSION = 1;
 
 /** A fresh, empty layout. Undefined zones are simply absent (not written). */
 export function emptyLayout() {
   return {
-    mount: { yawDeciDeg: 0, inverted: false },
+    mount: { yawDeciDeg: 0, inverted: false, offsetXMm: 0, offsetYMm: 0 },
     master: null, // { vertices: [...] } or null
     presence: new Array(PRESENCE_ZONE_COUNT).fill(null),
     entryExit: new Array(ENTRY_EXIT_PAIRS).fill(null), // { inner:{vertices}, outer:{vertices} }
@@ -52,6 +58,15 @@ export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = 
   }
   if (typeof layout?.mount?.inverted !== 'boolean') {
     errors.push('mount.inverted must be boolean');
+  }
+  // Absent is valid (defaults to 0, "disabled" — same convention every other
+  // absence-means-default field in this codebase uses); a PRESENT value must
+  // still be a valid in-range integer.
+  for (const k of ['offsetXMm', 'offsetYMm']) {
+    const v = layout?.mount?.[k];
+    if (v !== undefined && (!Number.isInteger(v) || v < -MOUNT_OFFSET_MM_MAX || v > MOUNT_OFFSET_MM_MAX)) {
+      errors.push(`mount.${k} ${v} outside [-${MOUNT_OFFSET_MM_MAX}, ${MOUNT_OFFSET_MM_MAX}]`);
+    }
   }
 
   checkPoly('master', layout.master, maxVertices, errors);
@@ -121,9 +136,13 @@ export function layoutToWritePlan(layout, { maxVertices = DEFAULT_MAX_VERTICES }
     });
   };
 
-  // 1. Mounting — must precede frame-dependent verification.
+  // 1. Mounting — must precede frame-dependent verification. The offset is
+  // part of "frame-dependent" too (2026-08-08): it changes what room frame
+  // the polygons below are interpreted in, exactly like yaw/inverted do.
   steps.push({ attrId: ATTR_YAW_TENTHS, label: 'yaw', type: 'int16', value: layout.mount.yawDeciDeg });
   steps.push({ attrId: ATTR_INVERTED, label: 'inverted', type: 'bool', value: !!layout.mount.inverted });
+  steps.push({ attrId: ATTR_MOUNT_OFFSET_X_MM, label: 'mount offset X', type: 'int16', value: layout.mount.offsetXMm ?? 0 });
+  steps.push({ attrId: ATTR_MOUNT_OFFSET_Y_MM, label: 'mount offset Y', type: 'int16', value: layout.mount.offsetYMm ?? 0 });
 
   // 2. Polygons (room frame).
   poly(ATTR_POLY_MASTER, 'master', layout.master);

@@ -39,7 +39,10 @@ export const POLY_KEY = {
   ],
 };
 export const EXCL_KEY = ['excl_zone_1', 'excl_zone_2', 'excl_zone_3'];
-export const MOUNT_KEY = { yaw: 'yaw_tenths', inverted: 'inverted' };
+export const MOUNT_KEY = {
+  yaw: 'yaw_tenths', inverted: 'inverted',
+  offsetXMm: 'mount_offset_x_mm', offsetYMm: 'mount_offset_y_mm',
+};
 
 /**
  * Project a layout to the ordered list of Z2M converter {key, value} sets.
@@ -56,6 +59,8 @@ export function layoutToZ2mSets(layout, { maxVertices = DEFAULT_MAX_VERTICES } =
 
   sets.push({ key: MOUNT_KEY.yaw, value: layout.mount.yawDeciDeg });
   sets.push({ key: MOUNT_KEY.inverted, value: !!layout.mount.inverted });
+  sets.push({ key: MOUNT_KEY.offsetXMm, value: layout.mount.offsetXMm ?? 0 });
+  sets.push({ key: MOUNT_KEY.offsetYMm, value: layout.mount.offsetYMm ?? 0 });
 
   addPoly(POLY_KEY.master, layout.master);
   for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) addPoly(POLY_KEY.presence[n], layout.presence?.[n]);

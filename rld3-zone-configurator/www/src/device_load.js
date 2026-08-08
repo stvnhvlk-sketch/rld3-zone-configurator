@@ -106,6 +106,13 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
     if (hasInv) layout.mount.inverted = !!reports[MOUNT_KEY.inverted];
     zoneStates.mount = (hasYaw && hasInv) ? ZONE_STATE.LOADED : ZONE_STATE.UNKNOWN;
   }
+  // Sensor room-space offset (2026-08-08). Kept separate from the mount LOADED
+  // gate above: a device predating this attribute simply won't report it, and
+  // that must not make an otherwise-successful yaw/inverted read show UNKNOWN.
+  // Absent -> stays at the emptyLayout default (0,0 — disabled), same
+  // absence-means-default convention the firmware itself uses.
+  if (MOUNT_KEY.offsetXMm in reports) layout.mount.offsetXMm = Number(reports[MOUNT_KEY.offsetXMm]);
+  if (MOUNT_KEY.offsetYMm in reports) layout.mount.offsetYMm = Number(reports[MOUNT_KEY.offsetYMm]);
 
   const master = loadPoly(reports, POLY_KEY.master, maxVertices, warnings);
   zoneStates.master = master.state;
@@ -139,7 +146,7 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
 /** The ordered set of converter keys a full "Read from device" should request. */
 export function deviceReadKeys() {
   return [
-    MOUNT_KEY.yaw, MOUNT_KEY.inverted,
+    MOUNT_KEY.yaw, MOUNT_KEY.inverted, MOUNT_KEY.offsetXMm, MOUNT_KEY.offsetYMm,
     POLY_KEY.master,
     ...POLY_KEY.presence,
     ...POLY_KEY.ez.flatMap((p) => [p.inner, p.outer]),

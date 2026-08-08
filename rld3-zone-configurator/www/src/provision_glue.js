@@ -64,7 +64,9 @@ export function sessionFromLayouts(base, cur, opts = {}) {
   for (let n = 0; n < 3; n++) {
     if (!rectsEqual(cur.exclusions[n], b.exclusions[n])) setExclusionRect(session, `excl${n}`, cur.exclusions[n]);
   }
-  if (cur.mount.yawDeciDeg !== b.mount.yawDeciDeg || !!cur.mount.inverted !== !!b.mount.inverted) {
+  if (cur.mount.yawDeciDeg !== b.mount.yawDeciDeg || !!cur.mount.inverted !== !!b.mount.inverted
+      || (cur.mount.offsetXMm ?? 0) !== (b.mount.offsetXMm ?? 0)
+      || (cur.mount.offsetYMm ?? 0) !== (b.mount.offsetYMm ?? 0)) {
     setMount(session, cur.mount);
   }
   return session;
@@ -92,6 +94,8 @@ const PROP_TO_SESSION = (() => {
   for (let i = 0; i < EXCLUSION_ZONE_COUNT; i++) m.set(EXCL_KEY[i], `excl${i}`);
   m.set(MOUNT_KEY.yaw, 'mount');
   m.set(MOUNT_KEY.inverted, 'mount');
+  m.set(MOUNT_KEY.offsetXMm, 'mount');
+  m.set(MOUNT_KEY.offsetYMm, 'mount');
   return m;
 })();
 

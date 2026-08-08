@@ -15,6 +15,11 @@ export const ATTR_POLY_MAX_VERTICES = 0x0005; // u8 — read this; do not hardco
 /* Mounting configuration (read/write) */
 export const ATTR_YAW_TENTHS = 0x0100; // int16, 0.1° units
 export const ATTR_INVERTED = 0x0101; // bool
+// Sensor's position in room-space coordinates, mm (2026-08-08) — lets the
+// operator choose a room-frame origin (e.g. a laser-measured corner) instead
+// of the sensor. (0,0) = disabled, the default.
+export const ATTR_MOUNT_OFFSET_X_MM = 0x0108; // int16, mm
+export const ATTR_MOUNT_OFFSET_Y_MM = 0x0109; // int16, mm
 
 /* Zone polygon provisioning. Read-back works (firmware W1); these are RW —
  * the configurator loads device geometry via device_load.layoutFromReports. */

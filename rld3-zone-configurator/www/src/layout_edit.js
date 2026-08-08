@@ -122,10 +122,13 @@ export function setExclusionRect(session, zoneKey, rect) {
   session.dirty.add(zoneKey);
 }
 
-/** Set mount (yaw in 0.1°, inverted). Marks 'mount' dirty. */
-export function setMount(session, { yawDeciDeg, inverted }) {
+/** Set mount (yaw in 0.1°, inverted, sensor room-space offset mm). Marks
+ *  'mount' dirty. */
+export function setMount(session, { yawDeciDeg, inverted, offsetXMm, offsetYMm }) {
   if (yawDeciDeg !== undefined) session.draft.mount.yawDeciDeg = yawDeciDeg;
   if (inverted !== undefined) session.draft.mount.inverted = !!inverted;
+  if (offsetXMm !== undefined) session.draft.mount.offsetXMm = offsetXMm;
+  if (offsetYMm !== undefined) session.draft.mount.offsetYMm = offsetYMm;
   session.dirty.add('mount');
 }
 
@@ -181,6 +184,8 @@ export function buildProvisionPlan(session, { maxVertices = session.maxVertices 
     if (ok) {
       sets.push({ key: MOUNT_KEY.yaw, value: session.draft.mount.yawDeciDeg });
       sets.push({ key: MOUNT_KEY.inverted, value: !!session.draft.mount.inverted });
+      sets.push({ key: MOUNT_KEY.offsetXMm, value: session.draft.mount.offsetXMm ?? 0 });
+      sets.push({ key: MOUNT_KEY.offsetYMm, value: session.draft.mount.offsetYMm ?? 0 });
     } else {
       skipped.push({ zone: 'mount', reason: 'invalid' });
       warnings.push(`mount: ${errors.join('; ')}`);
@@ -211,7 +216,8 @@ export function buildProvisionPlan(session, { maxVertices = session.maxVertices 
 /** Mark the plan's zones clean after a successful write (call once the adapter confirms). */
 export function markProvisioned(session, plan) {
   const written = new Set(plan.sets.map((s) => s.key));
-  if (written.has(MOUNT_KEY.yaw) || written.has(MOUNT_KEY.inverted)) session.dirty.delete('mount');
+  if (written.has(MOUNT_KEY.yaw) || written.has(MOUNT_KEY.inverted)
+      || written.has(MOUNT_KEY.offsetXMm) || written.has(MOUNT_KEY.offsetYMm)) session.dirty.delete('mount');
   for (const z of REGISTRY) if (written.has(z.propKey)) session.dirty.delete(z.key);
 }
 

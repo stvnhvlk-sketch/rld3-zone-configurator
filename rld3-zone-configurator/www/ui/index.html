@@ -137,6 +137,14 @@
   <div class="row">
     <label><input type="checkbox" id="inverted" /> Inverted (ceiling)</label>
   </div>
+  <div class="row">
+    <label>Origin X mm<input type="number" id="mountOffsetX" value="0" step="1" min="-10000" max="10000" title="The sensor's X position in room-space coordinates — choose a room-frame origin (e.g. a laser-measured corner) instead of the sensor. Set visually by dragging the sensor dot in Place Sensor mode; type here for an exact value. 0 (with Y also 0) disables the correction." /></label>
+    <label>Origin Y mm<input type="number" id="mountOffsetY" value="0" step="1" min="-10000" max="10000" title="The sensor's Y position in room-space coordinates — see Origin X." /></label>
+  </div>
+  <div style="font-size:11px; color:#8a97a8; margin:-2px 0 6px">
+    Place the sensor dot in <b>Place Sensor</b> mode to set its position relative to
+    whatever origin you choose (e.g. a room corner you can re-measure to with a laser).
+  </div>
 
   <!-- Motorized yaw alignment. Canonical design: _Documentation/RLD3Target-auto-align.md
        (pan-align-design.md is superseded). The motor closes the WHOLE error:
@@ -722,8 +730,14 @@ cv.addEventListener('pointerdown', (e) => {
       aimSensorAt(wp); draw(); return;
     }
     const prev = { x: sensor.x, y: sensor.y };
-    gestureUndo = () => { sensor.x = prev.x; sensor.y = prev.y; };
+    gestureUndo = () => {
+      sensor.x = prev.x; sensor.y = prev.y;
+      document.getElementById('mountOffsetX').value = prev.x;
+      document.getElementById('mountOffsetY').value = prev.y;
+    };
     sensor.x = Math.round(wp.x); sensor.y = Math.round(wp.y);
+    document.getElementById('mountOffsetX').value = sensor.x;
+    document.getElementById('mountOffsetY').value = sensor.y;
     sensorPlacing = true; dragging = true; draw(); return;
   }
   if (mode === 'align') {
@@ -805,7 +819,13 @@ cv.addEventListener('pointermove', (e) => {
   if (!dragging) return;
   gestureUndo = null;        // a real drag — the initial commit was intended
   if (sensorAiming) { aimSensorAt(evWorld(e)); draw(); return; }
-  if (sensorPlacing) { const w = evWorld(e); sensor.x = Math.round(w.x); sensor.y = Math.round(w.y); draw(); return; }
+  if (sensorPlacing) {
+    const w = evWorld(e);
+    sensor.x = Math.round(w.x); sensor.y = Math.round(w.y);
+    document.getElementById('mountOffsetX').value = sensor.x;
+    document.getElementById('mountOffsetY').value = sensor.y;
+    draw(); return;
+  }
   if (alignPlacing) {
     const w = evWorld(e);
     alignTarget = { x: Math.round(w.x), y: Math.round(w.y) };
@@ -1065,10 +1085,16 @@ function updateHint() {
 // --- Layout <-> app state ------------------------------------------------------
 function appToLayout() {
   const L = emptyLayout();
-  L.mount = { ...mount };
-  // §11: polygons are drawn in ABSOLUTE coords; the wire room frame is sensor-at-
-  // origin, so translate by -sensor_position. Exclusions are already sensor-frame.
-  const tr = (verts) => verts.map((v) => ({ x: v.x - sensor.x, y: v.y - sensor.y }));
+  // 2026-08-08: mount_offset_x/y_mm makes the device's own room frame
+  // ABSOLUTE (sensor position + rotation), matching what this tool has always
+  // called "ABSOLUTE coords" (§11). sensor.x/y IS that offset now (kept in
+  // sync on every device read/write), so the wire frame and the ABSOLUTE
+  // frame are the same thing and polygons need no translation before they're
+  // sent — see the identity `tr` below. This was previously "wire room frame
+  // is sensor-at-origin, translate by -sensor_position" because the device
+  // had no offset concept at all; that assumption is gone.
+  L.mount = { ...mount, offsetXMm: sensor.x, offsetYMm: sensor.y };
+  const tr = (verts) => verts.map((v) => ({ x: v.x, y: v.y }));
   L.master = polys.master ? { vertices: tr(polys.master) } : null;
   for (let n = 0; n < 8; n++) L.presence[n] = polys['pres' + n] ? { vertices: tr(polys['pres' + n]) } : null;   // V2.1 Delta B
   for (let p = 0; p < 2; p++) {
@@ -1183,6 +1209,8 @@ document.getElementById('panApplyErr').onclick = () => {
   panUpdateAlignError();                  // refresh the reversal note immediately
 };
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
+document.getElementById('mountOffsetX').oninput = (e) => { sensor.x = Math.round(parseFloat(e.target.value) || 0); draw(); };
+document.getElementById('mountOffsetY').oninput = (e) => { sensor.y = Math.round(parseFloat(e.target.value) || 0); draw(); };
 
 // Tool layout JSON = ABSOLUTE polygons + sensor placement (round-trips for editing).
 // The device-facing wire layout is produced separately by appToLayout() (Z2M sets).
@@ -1200,6 +1228,8 @@ function toolFromJSON(text) {
   mount.yawDeciDeg = o.sensor.yawDeciDeg || 0; mount.inverted = !!o.sensor.inverted;
   document.getElementById('yaw').value = mount.yawDeciDeg / 10;
   document.getElementById('inverted').checked = mount.inverted;
+  document.getElementById('mountOffsetX').value = sensor.x;
+  document.getElementById('mountOffsetY').value = sensor.y;
   for (const k of Object.keys(polys)) delete polys[k];
   for (const k of Object.keys(rects)) delete rects[k];
   Object.assign(polys, o.polys || {});
@@ -1401,8 +1431,14 @@ document.getElementById('mqRead').onclick = () => {
 
     const { layout, zoneStates: states, warnings } = layoutFromReports(deviceReports);
 
-    // Place sensor at origin — device polygons are room-frame at sensor origin → 1:1 absolute.
-    sensor.x = 0; sensor.y = 0;
+    // 2026-08-08: device polygons are room-frame INCLUDING the device's own
+    // sensor offset (0,0 on an unconfigured/older device — the old "sensor at
+    // origin" default falls out of that automatically), so sync sensor.x/y to
+    // whatever the device reports rather than forcing it to zero.
+    sensor.x = layout.mount.offsetXMm ?? 0;
+    sensor.y = layout.mount.offsetYMm ?? 0;
+    document.getElementById('mountOffsetX').value = sensor.x;
+    document.getElementById('mountOffsetY').value = sensor.y;
 
     // Populate poly zones from the device read.
     const setOrClear = (id, verts) => { if (verts) polys[id] = verts; else delete polys[id]; };

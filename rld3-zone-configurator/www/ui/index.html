@@ -1601,9 +1601,18 @@ mqLive.onclick = () => setLive(!liveOn);
  * The Coarse/Fine inputs are in DEGREES — the operator has no reason to know or care
  * about half-steps, so the °→half-step conversion (0.088°/half-step, 4096/rev) happens
  * invisibly in panClampDegreesToSteps() below; pan_jog on the wire is still half-steps.
- * The firmware authoritatively caps every jog to 45° (512 half-steps) and total travel to
- * ±135° (±1536) — that on-device clamp is what protects the USB power cable, so nothing
- * entered here can twist it; the UI degree limits are just belt-and-suspenders.
+ * ⚠️ THERE IS NO TRAVEL LIMIT, AND NOTHING PROTECTS THE CABLE. The firmware caps each
+ * jog to 45° (512 half-steps) — PAN_JOG_MAX_STEPS, per press — and that is the only
+ * guard that exists. There is no absolute position, no home, and no cumulative clamp:
+ * `pan_motor.h` and `pan_step.h` both say so outright, and the travel clamp, home and
+ * position tracking were all REMOVED 2026-07-24 (deliberate: don't impose a prohibitive
+ * limit, make the operator responsible). Repeated jogs in one direction WILL keep going.
+ * Cumulative cable twist is the operator's to track.
+ *
+ * This comment previously claimed the firmware clamped total travel to ±135° and that
+ * "nothing entered here can twist it". That was false, and a comment asserting a safety
+ * property the code does not have is worse than no comment — corrected 2026-08-08.
+ * The retired `pan_limit` attribute still visible over MQTT is not an active clamp.
  * There is NO motor-position feedback: the motor is open-loop (no encoder), so instead of a
  * meaningless commanded-step count the readout shows the RADAR's read of the target (x,y) in
  * room mm. During a survey, stand at a known spot and jog until the sensor's read matches
@@ -1619,7 +1628,8 @@ function panUpdateReadout() {
 }
 function panJog(steps) {
   if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
-  // No UI travel clamp — the firmware enforces the ±135° soft limit authoritatively.
+  // No clamp here and none on the device beyond the 45°-per-press cap — see the
+  // panel comment above. Net rotation is unbounded; the operator owns cable twist.
   z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_jog: steps }));
 }
 function panStop() {

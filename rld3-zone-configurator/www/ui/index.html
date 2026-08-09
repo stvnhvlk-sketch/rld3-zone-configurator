@@ -539,13 +539,31 @@ function drawAlignTarget() {
   const onlyTarget = liveTargets.filter(Boolean);
   if (onlyTarget.length === 1) {
     const t = onlyTarget[0];
-    drawRay(from, { x: sensor.x + t.x, y: sensor.y + t.y }, '#22d3ee');
+    // Targets already carry the device's sensor offset (mount_angle_apply), so
+    // they are ABSOLUTE — adding sensor.x/y here double-counted it and pointed
+    // the bearing ray at the wrong place, corrupting the very comparison this
+    // ray exists to make. Same defect as drawLiveTargets had. Fixed 2026-08-08.
+    drawRay(from, { x: t.x, y: t.y }, '#22d3ee');
   }
 
   const s = w2s(alignTarget);
   ctx.beginPath(); ctx.arc(s.sx, s.sy, 7, 0, Math.PI * 2);
   ctx.fillStyle = ALIGN_COLOR; ctx.fill();
   ctx.lineWidth = 1.5; ctx.strokeStyle = '#701a75'; ctx.stroke();
+
+  // Coordinate readout beside the dot. At a working zoom one pixel is several
+  // mm, so the dot's own position cannot be eyeballed — and the status box is
+  // across the panel, away from where the eye is. Same room · sensor format as
+  // the cursor readout, so the two can be compared directly.
+  const sf = absToSensor(alignTarget);
+  const label = `${alignTarget.x}, ${alignTarget.y} mm  ·  sensor ${Math.round(sf.x)}, ${Math.round(sf.y)}`;
+  ctx.font = '11px ui-monospace, monospace';
+  const w = ctx.measureText(label).width;
+  const lx = s.sx + 12, ly = s.sy - 10;
+  ctx.fillStyle = 'rgba(17,22,29,0.82)';
+  ctx.fillRect(lx - 4, ly - 11, w + 8, 15);
+  ctx.fillStyle = ALIGN_COLOR;
+  ctx.fillText(label, lx, ly);
 }
 
 function drawRegion(env, fill, stroke) {
@@ -987,7 +1005,14 @@ function alignUpdate() {
   }
 
   const t = present[0];
-  const betaDisplayed = Math.atan2(t.y, t.x) * 180 / Math.PI;
+  /* Both bearings must be measured FROM THE SENSOR, or the comparison is
+   * meaningless. betaStated already subtracts the sensor position (rel, above);
+   * this one did not — it took atan2 of the raw target, which was correct only
+   * while the device reported sensor-relative coordinates. Since the sensor
+   * offset landed (2026-08-08) targets arrive ABSOLUTE, so that computed the
+   * bearing from the ROOM ORIGIN and silently biased the yaw error by the
+   * offset. Small at a 50 mm offset, large at a room-corner one. */
+  const betaDisplayed = Math.atan2(t.y - sensor.y, t.x - sensor.x) * 180 / Math.PI;
   const errorDeg = wrapDeg(betaStated - betaDisplayed);
   box.textContent = dotLine +
     `stated ${betaStated.toFixed(1)}° · detected ${betaDisplayed.toFixed(1)}°\n` +

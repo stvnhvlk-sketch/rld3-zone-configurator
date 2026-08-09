@@ -474,9 +474,12 @@ function drawAxisLegend() {
   ctx.restore();
 }
 
-// Live targets stream in post-mount room frame (sensor at origin), so they
-// plot at sensor position + target — no yaw re-application (the device already
-// applied it). Cyan dots; the empty-slot sentinel arrives as null.
+// Live targets stream in post-mount room frame WITH the sensor offset already
+// applied by the device (mount_angle_apply), so they are already in the same
+// ABSOLUTE frame the canvas draws in — plot them as-is. Adding sensor.x/y here
+// would double-count the offset; that was the case until 2026-08-08, when the
+// device had no offset of its own and the tool supplied the whole translation.
+// Cyan dots; the empty-slot sentinel arrives as null.
 let liveTargets = [];
 
 // liveTargets is the converter-decoded `targets` array from the device state
@@ -491,7 +494,7 @@ function drawLiveTargets() {
   const master = polys.master;
   for (const t of liveTargets) {
     if (!t) continue;
-    const abs = { x: sensor.x + t.x, y: sensor.y + t.y };
+    const abs = { x: t.x, y: t.y };   // already absolute — see the note above
     const s = w2s(abs);
     const bad = isTargetOutsideRoom(abs, master);
     ctx.beginPath(); ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);

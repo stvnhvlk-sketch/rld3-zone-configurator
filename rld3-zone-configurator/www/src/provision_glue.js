@@ -16,11 +16,11 @@
  */
 
 import {
-  createEditSession, setZoneVertices, setExclusionRect, setMount, buildProvisionPlan,
+  createEditSession, setZoneVertices, setExclusionRect, setMount, setZoneStyle, buildProvisionPlan,
 } from './layout_edit.js';
 import { emptyLayout } from './layout.js';
-import { POLY_KEY, EXCL_KEY, MOUNT_KEY } from './z2m_adapter.js';
-import { PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT } from './attributes.js';
+import { POLY_KEY, EXCL_KEY, MOUNT_KEY, ZONE_STYLE_KEY } from './z2m_adapter.js';
+import { PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT, OCCUPANCY_ZONE_STYLE } from './attributes.js';
 
 /** Two polygon zone values ({vertices}|null) are equal iff same verts in order. */
 export function polygonsEqual(a, b) {
@@ -61,6 +61,13 @@ export function sessionFromLayouts(base, cur, opts = {}) {
   for (const [key, c, bv] of polyMap) {
     if (!polygonsEqual(c, bv)) setZoneVertices(session, key, c ? c.vertices : null);
   }
+  for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) {
+    const c = cur.presence[n];
+    if (!c) continue; // no polygon => no runtime style to write
+    const cs = c.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    const bs = b.presence[n]?.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    if (cs !== bs) setZoneStyle(session, n, cs);
+  }
   for (let n = 0; n < 3; n++) {
     if (!rectsEqual(cur.exclusions[n], b.exclusions[n])) setExclusionRect(session, `excl${n}`, cur.exclusions[n]);
   }
@@ -86,7 +93,10 @@ export function planFromLayouts(base, cur, opts = {}) {
 const PROP_TO_SESSION = (() => {
   const m = new Map();
   m.set(POLY_KEY.master, 'master');
-  for (let i = 0; i < PRESENCE_ZONE_COUNT; i++) m.set(POLY_KEY.presence[i], `presence${i}`);
+  for (let i = 0; i < PRESENCE_ZONE_COUNT; i++) {
+    m.set(POLY_KEY.presence[i], `presence${i}`);
+    m.set(ZONE_STYLE_KEY[i], `presence${i}_style`);
+  }
   for (let i = 0; i < ENTRY_EXIT_PAIRS; i++) {
     m.set(POLY_KEY.ez[i].inner, `ez${i}_in`);
     m.set(POLY_KEY.ez[i].outer, `ez${i}_out`);

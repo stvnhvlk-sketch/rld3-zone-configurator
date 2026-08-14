@@ -24,9 +24,12 @@ import { emptyLayout } from './layout.js';
 import { decodePolygon, hexToBytes, DEFAULT_MAX_VERTICES } from './polygon_codec.js';
 import { decodeExclusion } from './exclusion_codec.js';
 import {
-  POLY_KEY, EXCL_KEY, MOUNT_KEY,
+  POLY_KEY, EXCL_KEY, MOUNT_KEY, ZONE_STYLE_KEY,
 } from './z2m_adapter.js';
-import { PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT } from './attributes.js';
+import {
+  PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
+  OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES,
+} from './attributes.js';
 
 export const ZONE_STATE = Object.freeze({
   LOADED: 'loaded',
@@ -76,6 +79,22 @@ function loadExclusion(reports, key, warnings) {
   }
 }
 
+
+/** Load one Occupancy Zone style. Missing is backwards-compatible DEFAULT; an
+ * invalid report is surfaced but geometry may still be loaded independently. */
+function loadStyle(reports, key, warnings) {
+  if (!(key in reports)) return { state: ZONE_STATE.UNKNOWN, style: OCCUPANCY_ZONE_STYLE.DEFAULT };
+  const raw = reports[key];
+  const style = typeof raw === 'number'
+    ? OCCUPANCY_ZONE_STYLES[raw]
+    : String(raw).toLowerCase();
+  if (!OCCUPANCY_ZONE_STYLES.includes(style)) {
+    warnings.push(`${key}: invalid Occupancy Zone style "${raw}" — using default in the editor`);
+    return { state: ZONE_STATE.INVALID, style: OCCUPANCY_ZONE_STYLE.DEFAULT };
+  }
+  return { state: ZONE_STATE.LOADED, style };
+}
+
 /**
  * Build a layout + per-zone state from a merged device report object.
  *
@@ -90,6 +109,7 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
     mount: ZONE_STATE.UNKNOWN,
     master: ZONE_STATE.UNKNOWN,
     presence: new Array(PRESENCE_ZONE_COUNT).fill(ZONE_STATE.UNKNOWN),
+    presenceStyle: new Array(PRESENCE_ZONE_COUNT).fill(ZONE_STATE.UNKNOWN),
     entryExit: Array.from({ length: ENTRY_EXIT_PAIRS }, () => ({
       inner: ZONE_STATE.UNKNOWN, outer: ZONE_STATE.UNKNOWN,
     })),
@@ -120,8 +140,10 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
 
   for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) {
     const r = loadPoly(reports, POLY_KEY.presence[n], maxVertices, warnings);
+    const sr = loadStyle(reports, ZONE_STYLE_KEY[n], warnings);
     zoneStates.presence[n] = r.state;
-    layout.presence[n] = r.poly;
+    zoneStates.presenceStyle[n] = sr.state;
+    layout.presence[n] = r.poly ? { ...r.poly, style: sr.style } : null;
   }
 
   for (let i = 0; i < ENTRY_EXIT_PAIRS; i++) {
@@ -151,6 +173,7 @@ export function deviceReadKeys() {
     ...POLY_KEY.presence,
     ...POLY_KEY.ez.flatMap((p) => [p.inner, p.outer]),
     ...EXCL_KEY,
+    ...ZONE_STYLE_KEY,
   ];
 }
 

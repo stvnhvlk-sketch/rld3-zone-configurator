@@ -19,7 +19,7 @@
 
 import { encodePolygon, bytesToHex, DEFAULT_MAX_VERTICES } from './polygon_codec.js';
 import { validateLayout } from './layout.js';
-import { PRESENCE_ZONE_COUNT } from './attributes.js';
+import { PRESENCE_ZONE_COUNT, OCCUPANCY_ZONE_STYLE } from './attributes.js';
 
 /*
  * Converter property keys (mirror RLD3Target.mjs POLY_KEY_TO_ATTR / EXCL_KEY_TO_IDX).
@@ -39,6 +39,7 @@ export const POLY_KEY = {
   ],
 };
 export const EXCL_KEY = ['excl_zone_1', 'excl_zone_2', 'excl_zone_3'];
+export const ZONE_STYLE_KEY = Array.from({ length: PRESENCE_ZONE_COUNT }, (_, n) => `zone_${n + 1}_style`);
 export const MOUNT_KEY = {
   yaw: 'yaw_tenths', inverted: 'inverted',
   offsetXMm: 'mount_offset_x_mm', offsetYMm: 'mount_offset_y_mm',
@@ -63,7 +64,13 @@ export function layoutToZ2mSets(layout, { maxVertices = DEFAULT_MAX_VERTICES } =
   sets.push({ key: MOUNT_KEY.offsetYMm, value: layout.mount.offsetYMm ?? 0 });
 
   addPoly(POLY_KEY.master, layout.master);
-  for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) addPoly(POLY_KEY.presence[n], layout.presence?.[n]);
+  for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) {
+    const zone = layout.presence?.[n];
+    addPoly(POLY_KEY.presence[n], zone);
+    // Style gives the polygon its Occupancy Zone meaning. Only write it when
+    // the zone itself exists; an absent polygon has no runtime style.
+    if (zone != null) sets.push({ key: ZONE_STYLE_KEY[n], value: zone.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT });
+  }
   layout.entryExit?.forEach((pair, i) => {
     if (pair == null) return;
     addPoly(POLY_KEY.ez[i].inner, pair.inner);

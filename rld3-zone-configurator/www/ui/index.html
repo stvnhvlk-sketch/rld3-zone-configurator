@@ -125,6 +125,19 @@
 
   <h2>Zone</h2>
   <div id="zones"></div>
+  <div id="zoneStyleRow" class="row" style="display:none; margin-top:8px">
+    <label>Occupancy style
+      <select id="zoneStyle">
+        <option value="default">Default</option>
+        <option value="bed">Bed</option>
+        <option value="chair">Chair</option>
+        <option value="couch">Couch</option>
+        <option value="table">Table</option>
+        <option value="walkway">Walkway</option>
+      </select>
+    </label>
+  </div>
+  <div id="zoneStyleNote" style="display:none; font-size:11px; color:#8a97a8; margin:-2px 0 6px"></div>
 
   <h2>Mounting</h2>
   <div class="row">
@@ -209,19 +222,19 @@
   <div id="status">—</div>
 
   <!-- GEOMETRY ONLY — deliberately not called a backup. toolToJSON() captures the
-       sensor mount + polygons + exclusion rects and nothing else; per-zone tuning
+       sensor mount + polygons + Occupancy Zone styles + exclusion rects and nothing else; per-zone tuning
        (entry/exit frames, hold_min, stat_*), pool tuning (smoothing,
        static_hold_timeout_min, target_persistence_s, miss_grace_s) and auto_reset_s
        all live on the device and are NOT here. The bench device's tuning is
        genuinely non-uniform, so "restore from export" would silently lose it. -->
-  <h2>Layout I/O <span style="font-weight:normal; font-size:11px; opacity:.7">(geometry only — not a device backup)</span></h2>
+  <h2>Layout I/O <span style="font-weight:normal; font-size:11px; opacity:.7">(geometry + zone meaning — not a device backup)</span></h2>
   <div class="row">
-    <button id="export" title="Save the LAYOUT: sensor mount, polygons and exclusion rects. Does NOT capture the device's tuning (entry/exit frames, hold_min, smoothing, persistence, miss grace, auto reset) — those stay on the sensor and are not restored by an import.">Export Layout JSON</button>
+    <button id="export" title="Save the LAYOUT: sensor mount, polygons, Occupancy Zone styles, and exclusion rects. Does NOT capture device tuning (entry/exit frames, hold_min, smoothing, persistence, miss grace, auto reset).">Export Layout JSON</button>
     <button id="import" title="Load a layout previously exported here. Restores geometry and mount only — device tuning is untouched.">Import Layout JSON</button>
     <button id="z2m">Preview write commands (debug)</button>
   </div>
   <div style="font-size:11px; opacity:.75; margin-bottom:6px">
-    Captures mount + zone geometry. Device tuning (entry/exit frames, hold_min,
+    Captures mount + zone geometry + Occupancy Zone style. Device tuning (entry/exit frames, hold_min,
     smoothing, persistence, miss grace, auto reset) is <b>not</b> included.
   </div>
   <textarea id="io" placeholder="Exported layout / Z2M sets appear here; paste to import."></textarea>
@@ -241,6 +254,7 @@
 import { validatePolygon, DEFAULT_MAX_VERTICES } from '../src/polygon_codec.js';
 import { emptyLayout, layoutToJSON, layoutFromJSON } from '../src/layout.js';
 import { layoutToZ2mSets, createZ2mAdapter, POLY_KEY, EXCL_KEY } from '../src/z2m_adapter.js';
+import { OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES } from '../src/attributes.js';
 import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_load.js';
 import { markProvisioned } from '../src/layout_edit.js';
 import { planFromLayouts, confirmPlan } from '../src/provision_glue.js';
@@ -345,6 +359,7 @@ const mount = { yawDeciDeg: 0, inverted: false };
 const sensor = { x: 0, y: 0 };   // sensor position in ABSOLUTE room frame (§11)
 const polys = {};            // id → [{x,y}] ABSOLUTE-frame vertices for poly zones
 const rects = {};            // id → {x1,y1,x2,y2} SENSOR-frame rect for excl zones
+const presenceStyles = new Array(8).fill(OCCUPANCY_ZONE_STYLE.DEFAULT); // semantic style per Occupancy Zone
 let activeId = 'master';
 let mode = 'pan';   // Pan is the safe default — no inadvertent drawing on first click.
 let draft = [];              // vertices being drawn (poly) or [corner] (rect)
@@ -367,6 +382,7 @@ let alignPlacing = false;    // dragging the dot in 'align' mode
 let deviceReports = {};       // merged JSON from device state topic during a Read
 let loadedZoneStates = null;  // zoneStates returned by the last layoutFromReports
 let deviceBaseline = null;    // deep snapshot of polys at read time (badge dirty-detect)
+let deviceBaselineStyles = null; // style snapshot at read time, parallel to presenceStyles
 let deviceBaselineLayout = null; // the read-back layout (wire frame) — A3 provision baseline
 // C1: set by the provision handler so the following re-read can diff against the write.
 let pendingConfirm = null;    // { plan, writtenLayout } | null
@@ -952,7 +968,9 @@ function refreshStatus() {
     const v = validatePolygon(pts, { maxVertices: DEFAULT_MAX_VERTICES });
     const bb = boundsOf(pts, null);
     const dims = bb ? ` · ${bb.xmax - bb.xmin}×${bb.ymax - bb.ymin} mm` : '';
-    s.textContent = `${z.label}: ${pts.length} verts${dims}\n` + (v.ok ? 'valid ✓' : v.errors.join('\n'));
+    const styleLine = z.id.startsWith('pres')
+      ? ` · style ${presenceStyles[parseInt(z.id.slice(4), 10)]}` : '';
+    s.textContent = `${z.label}: ${pts.length} verts${dims}${styleLine}\n` + (v.ok ? 'valid ✓' : v.errors.join('\n'));
     s.className = v.ok ? 'ok' : 'err';
   } else {
     const r = rects[z.id];
@@ -1124,7 +1142,8 @@ function appToLayout() {
   L.mount = { ...mount, offsetXMm: sensor.x, offsetYMm: sensor.y };
   const tr = (verts) => verts.map((v) => ({ x: v.x, y: v.y }));
   L.master = polys.master ? { vertices: tr(polys.master) } : null;
-  for (let n = 0; n < 8; n++) L.presence[n] = polys['pres' + n] ? { vertices: tr(polys['pres' + n]) } : null;   // V2.1 Delta B
+  for (let n = 0; n < 8; n++) L.presence[n] = polys['pres' + n]
+    ? { vertices: tr(polys['pres' + n]), style: presenceStyles[n] } : null;
   for (let p = 0; p < 2; p++) {
     const inn = polys[`ez${p}_in`], out = polys[`ez${p}_out`];
     L.entryExit[p] = (inn || out) ? { inner: inn ? { vertices: tr(inn) } : null, outer: out ? { vertices: tr(out) } : null } : null;
@@ -1145,12 +1164,45 @@ ZONES.forEach((z) => {
   }
   const b = document.createElement('button');
   b.innerHTML = `<span class="swatch" style="background:${z.color}"></span>${z.label}<span class="state-dot" data-zone="${z.id}"></span>`;
-  b.onclick = () => { activeId = z.id; draft = []; selVert = -1; syncZoneButtons(); draw(); };
+  b.onclick = () => { activeId = z.id; draft = []; selVert = -1; syncZoneButtons(); syncZoneStyleControl(); draw(); };
   b.dataset.zone = z.id; catEl.appendChild(b);
 });
 function syncZoneButtons() {
   zonesEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.zone === activeId));
 }
+
+const zoneStyleEl = document.getElementById('zoneStyle');
+const zoneStyleRow = document.getElementById('zoneStyleRow');
+const zoneStyleNote = document.getElementById('zoneStyleNote');
+const STYLE_NOTE = {
+  default: 'Uses the Room default policy.',
+  bed: 'Resting/sleeping area; occupancy and traversal allowed.',
+  chair: 'Known sitting location; occupancy and traversal allowed.',
+  couch: 'Known sitting/lying location; occupancy and traversal allowed.',
+  table: 'Physical obstacle: new-track start forbidden, occupancy restricted, traversal forbidden.',
+  walkway: 'Normal traversable path; start, occupancy, and traversal allowed.',
+};
+function activePresenceIndex() {
+  return activeId.startsWith('pres') ? parseInt(activeId.slice(4), 10) : -1;
+}
+function syncZoneStyleControl() {
+  const n = activePresenceIndex();
+  const show = n >= 0 && n < presenceStyles.length;
+  zoneStyleRow.style.display = show ? '' : 'none';
+  zoneStyleNote.style.display = show ? '' : 'none';
+  if (!show) return;
+  zoneStyleEl.value = presenceStyles[n];
+  zoneStyleNote.textContent = STYLE_NOTE[presenceStyles[n]] ?? '';
+}
+zoneStyleEl.onchange = () => {
+  const n = activePresenceIndex();
+  if (n < 0) return;
+  const style = zoneStyleEl.value;
+  if (!OCCUPANCY_ZONE_STYLES.includes(style)) return;
+  presenceStyles[n] = style;
+  syncZoneStyleControl();
+  draw();
+};
 
 // --- Zone state badges (A2) ----------------------------------------------------
 function stateForZoneId(id) {
@@ -1194,10 +1246,16 @@ function rectDirty(id) {
   return cur.x1 !== base.x1 || cur.y1 !== base.y1 || cur.x2 !== base.x2 || cur.y2 !== base.y2;
 }
 
+function styleDirty(id) {
+  if (!deviceBaselineStyles || !id.startsWith('pres') || !polys[id]) return false;
+  const n = parseInt(id.slice(4), 10);
+  return presenceStyles[n] !== deviceBaselineStyles[n];
+}
+
 function zoneBadgeState(id) {
   if (!loadedZoneStates) return null;
   const z = zoneById[id];
-  if (z.kind === 'poly' && polyDirty(id)) return 'edited';
+  if (z.kind === 'poly' && (polyDirty(id) || styleDirty(id))) return 'edited';
   if (z.kind === 'rect' && rectDirty(id)) return 'edited';
   return stateForZoneId(id);
 }
@@ -1244,14 +1302,14 @@ document.getElementById('mountOffsetY').oninput = (e) => { sensor.y = Math.round
 // The device-facing wire layout is produced separately by appToLayout() (Z2M sets).
 function toolToJSON() {
   return JSON.stringify({
-    version: 2, tool: 'rld3-configurator',
+    version: 3, tool: 'rld3-configurator',
     sensor: { x: sensor.x, y: sensor.y, yawDeciDeg: mount.yawDeciDeg, inverted: mount.inverted },
-    polys, rects,
+    polys, rects, presenceStyles,
   }, null, 2);
 }
 function toolFromJSON(text) {
   const o = JSON.parse(text);
-  if (o.version !== 2 || !o.sensor) throw new Error('not a v2 tool layout');
+  if ((o.version !== 2 && o.version !== 3) || !o.sensor) throw new Error('not a supported v2/v3 tool layout');
   sensor.x = Math.round(o.sensor.x || 0); sensor.y = Math.round(o.sensor.y || 0);
   mount.yawDeciDeg = o.sensor.yawDeciDeg || 0; mount.inverted = !!o.sensor.inverted;
   document.getElementById('yaw').value = mount.yawDeciDeg / 10;
@@ -1262,6 +1320,13 @@ function toolFromJSON(text) {
   for (const k of Object.keys(rects)) delete rects[k];
   Object.assign(polys, o.polys || {});
   Object.assign(rects, o.rects || {});
+  const importedStyles = o.version >= 3 ? (o.presenceStyles || []) : [];
+  for (let n = 0; n < presenceStyles.length; n++) {
+    const style = importedStyles[n] ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    if (!OCCUPANCY_ZONE_STYLES.includes(style)) throw new Error(`invalid presenceStyles[${n}] "${style}"`);
+    presenceStyles[n] = style;
+  }
+  syncZoneStyleControl();
   draw();
 }
 
@@ -1434,8 +1499,9 @@ document.getElementById('mqRead').onclick = () => {
   deviceReports = {};
 
   const allKeys = deviceReadKeys();
-  // Scalars (yaw, inverted) may batch; each polygon/exclusion octet gets its own
-  // read request — batching truncates to 29 B (APDU limit, proven W1).
+  // The first two small scalars (yaw, inverted) may batch; every remaining
+  // key is read individually. That is required for 56-byte polygon octets and is
+  // intentionally also used for the small style scalars to keep this path simple.
   const scalarKeys = allKeys.slice(0, 2);
   const blobKeys = allKeys.slice(2);
   z2mAdapter.readKeys(scalarKeys);
@@ -1471,7 +1537,11 @@ document.getElementById('mqRead').onclick = () => {
     // Populate poly zones from the device read.
     const setOrClear = (id, verts) => { if (verts) polys[id] = verts; else delete polys[id]; };
     setOrClear('master', layout.master?.vertices);
-    for (let n = 0; n < 8; n++) setOrClear('pres' + n, layout.presence[n]?.vertices);   // V2.1 Delta B
+    for (let n = 0; n < 8; n++) {
+      setOrClear('pres' + n, layout.presence[n]?.vertices);
+      presenceStyles[n] = layout.presence[n]?.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    }
+    syncZoneStyleControl();
     for (let p = 0; p < 2; p++) {
       setOrClear(`ez${p}_in`, layout.entryExit[p]?.inner?.vertices);
       setOrClear(`ez${p}_out`, layout.entryExit[p]?.outer?.vertices);
@@ -1498,6 +1568,7 @@ document.getElementById('mqRead').onclick = () => {
     deviceBaseline = {};
     for (const [k, v] of Object.entries(polys)) deviceBaseline[k] = v.map((pt) => ({ x: pt.x, y: pt.y }));
     for (const [k, r] of Object.entries(rects)) deviceBaseline[k] = { ...r };
+    deviceBaselineStyles = [...presenceStyles];
     // Keep the read-back layout (wire frame, sensor-at-origin) as the provision
     // baseline for A3's safe read-modify-write. LOADED zones only — EMPTY/UNKNOWN/
     // INVALID stay null so the plan never treats them as real state to protect.
@@ -1685,6 +1756,7 @@ function panClampDegreesToSteps(el, defDeg) {
 }
 
 // boot
+syncZoneStyleControl();
 cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';   // match the default mode
 syncZoneButtons();
 resize();

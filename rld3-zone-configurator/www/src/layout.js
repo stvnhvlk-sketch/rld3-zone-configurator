@@ -19,6 +19,7 @@ import {
   ATTR_YAW_TENTHS, ATTR_INVERTED, ATTR_MOUNT_OFFSET_X_MM, ATTR_MOUNT_OFFSET_Y_MM,
   ATTR_POLY_MASTER, ATTR_POLY_PRES, ATTR_POLY_EZ,
   ATTR_EXCL, PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
+  OCCUPANCY_ZONE_STYLE, isOccupancyZoneStyle, occupancyZoneStyleCode, attrZcfg,
 } from './attributes.js';
 
 /* Sensor room-space offset bound (mm) — mirrors mount_angle_nvs.c's
@@ -26,7 +27,7 @@ import {
  * architecture already uses (3T-mounting.md §6). */
 const MOUNT_OFFSET_MM_MAX = 10000;
 
-export const LAYOUT_VERSION = 1;
+export const LAYOUT_VERSION = 2;
 
 /** A fresh, empty layout. Undefined zones are simply absent (not written). */
 export function emptyLayout() {
@@ -70,7 +71,12 @@ export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = 
   }
 
   checkPoly('master', layout.master, maxVertices, errors);
-  layout.presence?.forEach((p, i) => checkPoly(`presence[${i}]`, p, maxVertices, errors));
+  layout.presence?.forEach((p, i) => {
+    checkPoly(`presence[${i}]`, p, maxVertices, errors);
+    if (p != null && p.style !== undefined && !isOccupancyZoneStyle(p.style)) {
+      errors.push(`presence[${i}].style ${p.style} is invalid`);
+    }
+  });
   layout.entryExit?.forEach((pair, i) => {
     if (pair == null) return;
     checkPoly(`entryExit[${i}].inner`, pair.inner, maxVertices, errors);
@@ -92,18 +98,28 @@ export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = 
  * JSON save / load (versioned envelope)
  * ------------------------------------------------------------------------- */
 
+function withExplicitStyles(layout) {
+  const out = JSON.parse(JSON.stringify({ ...emptyLayout(), ...layout }));
+  out.presence = (out.presence ?? []).map((zone) => zone == null
+    ? null
+    : { ...zone, style: zone.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT });
+  while (out.presence.length < PRESENCE_ZONE_COUNT) out.presence.push(null);
+  return out;
+}
+
 export function layoutToJSON(layout, { pretty = true } = {}) {
-  const envelope = { version: LAYOUT_VERSION, layout };
+  const envelope = { version: LAYOUT_VERSION, layout: withExplicitStyles(layout) };
   return JSON.stringify(envelope, null, pretty ? 2 : 0);
 }
 
 export function layoutFromJSON(text) {
   const env = JSON.parse(text);
-  if (env.version !== LAYOUT_VERSION) {
-    throw new Error(`unsupported layout version ${env.version} (expected ${LAYOUT_VERSION})`);
+  if (env.version !== 1 && env.version !== LAYOUT_VERSION) {
+    throw new Error(`unsupported layout version ${env.version} (expected 1 or ${LAYOUT_VERSION})`);
   }
-  // Merge over a fresh skeleton so absent fields get defaults.
-  return { ...emptyLayout(), ...env.layout };
+  // Version 1 had geometry only. Upgrade in memory by assigning DEFAULT style
+  // to every defined presence polygon; no device state is changed by import.
+  return withExplicitStyles({ ...emptyLayout(), ...env.layout });
 }
 
 /* ----------------------------------------------------------------------------
@@ -146,7 +162,16 @@ export function layoutToWritePlan(layout, { maxVertices = DEFAULT_MAX_VERTICES }
 
   // 2. Polygons (room frame).
   poly(ATTR_POLY_MASTER, 'master', layout.master);
-  layout.presence?.forEach((p, i) => poly(ATTR_POLY_PRES[i], `presence[${i}]`, p));
+  layout.presence?.forEach((p, i) => {
+    poly(ATTR_POLY_PRES[i], `presence[${i}]`, p);
+    if (p != null) {
+      const style = p.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+      steps.push({
+        attrId: attrZcfg(i, 'style'), label: `presence[${i}].style`,
+        type: 'uint8', value: occupancyZoneStyleCode(style),
+      });
+    }
+  });
   layout.entryExit?.forEach((pair, i) => {
     if (pair == null) return;
     poly(ATTR_POLY_EZ[i].inner, `entryExit[${i}].inner`, pair.inner);

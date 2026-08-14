@@ -26,8 +26,11 @@
 
 import { emptyLayout, validateLayout } from './layout.js';
 import { encodePolygon, bytesToHex, validatePolygon, DEFAULT_MAX_VERTICES } from './polygon_codec.js';
-import { POLY_KEY, EXCL_KEY, MOUNT_KEY } from './z2m_adapter.js';
-import { PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT } from './attributes.js';
+import { POLY_KEY, EXCL_KEY, MOUNT_KEY, ZONE_STYLE_KEY } from './z2m_adapter.js';
+import {
+  PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
+  OCCUPANCY_ZONE_STYLE, isOccupancyZoneStyle,
+} from './attributes.js';
 
 /* Canonical zone registry — one descriptor per writable slot. Drives edits and
  * the provision plan so there's a single place that knows key ↔ layout path. */
@@ -132,9 +135,34 @@ export function setMount(session, { yawDeciDeg, inverted, offsetXMm, offsetYMm }
   session.dirty.add('mount');
 }
 
+function styleDirtyKey(zoneIdx) { return `presence${zoneIdx}_style`; }
+
+/** Change the semantic style of an existing/drawn Occupancy Zone without
+ * rewriting its polygon. */
+export function setZoneStyle(session, zoneIdx, style) {
+  if (!Number.isInteger(zoneIdx) || zoneIdx < 0 || zoneIdx >= PRESENCE_ZONE_COUNT) {
+    throw new Error(`presence zone index out of range: ${zoneIdx}`);
+  }
+  if (!isOccupancyZoneStyle(style)) throw new Error(`invalid occupancy zone style: ${style}`);
+  const zone = session.draft.presence[zoneIdx];
+  if (zone == null) throw new Error(`cannot style undefined presence zone ${zoneIdx}`);
+  zone.style = style;
+  session.dirty.add(styleDirtyKey(zoneIdx));
+}
+
 /** Discard a zone's edits, restoring the loaded value (deep-copied so the
  *  draft never shares refs with the baseline). */
 export function revertZone(session, zoneKey) {
+  const sm = /^presence(\d+)_style$/.exec(zoneKey);
+  if (sm) {
+    const i = Number(sm[1]);
+    if (i >= PRESENCE_ZONE_COUNT) throw new Error(`unknown zone: ${zoneKey}`);
+    const draft = session.draft.presence[i];
+    const base = session.baseline.presence[i];
+    if (draft) draft.style = base?.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    session.dirty.delete(zoneKey);
+    return;
+  }
   if (zoneKey === 'mount') {
     session.draft.mount = { ...session.baseline.mount };
   } else {
@@ -210,6 +238,22 @@ export function buildProvisionPlan(session, { maxVertices = session.maxVertices 
     }
   }
 
+  // Occupancy Zone style is independently writable. Keep it separate from the
+  // polygon so a semantic edit never rewrites geometry merely to carry style.
+  for (let i = 0; i < PRESENCE_ZONE_COUNT; i++) {
+    const dk = styleDirtyKey(i);
+    if (!session.dirty.has(dk)) continue;
+    const zone = session.draft.presence[i];
+    if (zone == null) { skipped.push({ zone: dk, reason: 'style-without-zone' }); continue; }
+    const style = zone.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
+    if (!isOccupancyZoneStyle(style)) {
+      skipped.push({ zone: dk, reason: 'invalid' });
+      warnings.push(`${dk}: invalid style ${style}`);
+      continue;
+    }
+    sets.push({ key: ZONE_STYLE_KEY[i], value: style });
+  }
+
   return { sets, skipped, warnings };
 }
 
@@ -219,5 +263,8 @@ export function markProvisioned(session, plan) {
   if (written.has(MOUNT_KEY.yaw) || written.has(MOUNT_KEY.inverted)
       || written.has(MOUNT_KEY.offsetXMm) || written.has(MOUNT_KEY.offsetYMm)) session.dirty.delete('mount');
   for (const z of REGISTRY) if (written.has(z.propKey)) session.dirty.delete(z.key);
+  for (let i = 0; i < PRESENCE_ZONE_COUNT; i++) {
+    if (written.has(ZONE_STYLE_KEY[i])) session.dirty.delete(styleDirtyKey(i));
+  }
 }
 

@@ -41,7 +41,30 @@ export const ATTR_ZCFG_STRIDE = 0x0010;
 // holdMin (offset 5) is u16 (V2.1 Delta C) — all others are u8. Consumers that
 // write it must use a 16-bit type; the Z2M converter's zone_N_hold_min key
 // handles this at the MQTT boundary.
-export const ZCFG_OFFSET = { entryFrames: 0, exitFrames: 1, statThreshMf: 2, statWindow: 3, statPersist: 4, holdMin: 5 };
+export const ZCFG_OFFSET = { entryFrames: 0, exitFrames: 1, statThreshMf: 2, statWindow: 3, statPersist: 4, holdMin: 5, style: 6 };
+
+/* Occupancy Zone style is semantic configuration, not geometry tuning. The
+ * Zigbee2MQTT converter exposes the names below; firmware stores the matching
+ * u8 codes at zone-block offset +6. */
+export const OCCUPANCY_ZONE_STYLE = Object.freeze({
+  DEFAULT: 'default',
+  BED: 'bed',
+  CHAIR: 'chair',
+  COUCH: 'couch',
+  TABLE: 'table',
+  WALKWAY: 'walkway',
+});
+export const OCCUPANCY_ZONE_STYLES = Object.freeze(Object.values(OCCUPANCY_ZONE_STYLE));
+export const OCCUPANCY_ZONE_STYLE_CODE = Object.freeze({
+  default: 0, bed: 1, chair: 2, couch: 3, table: 4, walkway: 5,
+});
+export function isOccupancyZoneStyle(style) {
+  return OCCUPANCY_ZONE_STYLES.includes(style);
+}
+export function occupancyZoneStyleCode(style) {
+  if (!isOccupancyZoneStyle(style)) throw new Error(`invalid occupancy zone style: ${style}`);
+  return OCCUPANCY_ZONE_STYLE_CODE[style];
+}
 export function attrZcfg(zone, field) {
   return ATTR_ZCFG_BASE + zone * ATTR_ZCFG_STRIDE + ZCFG_OFFSET[field];
 }

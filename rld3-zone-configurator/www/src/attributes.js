@@ -1,7 +1,7 @@
 /*
  * attributes.js — RLD3 custom cluster 0xFDCD attribute map.
  *
- * MIRROR OF FIRMWARE: main/zigbee/zigbee.h. If an ID changes there, change it
+ * MIRROR OF FIRMWARE: main/application/zigbee.h. If an ID changes there, change it
  * here. The configurator core is transport-agnostic but it is NOT attribute-
  * agnostic — these IDs are the contract.
  */

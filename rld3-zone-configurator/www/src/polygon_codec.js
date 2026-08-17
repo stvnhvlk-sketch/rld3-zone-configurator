@@ -1,7 +1,7 @@
 /*
  * polygon_codec.js — RLD3-Target zone polygon wire codec (adapter-agnostic core)
  *
- * Mirrors the firmware `polygon_t` byte layout (main/Polygon/polygon.h) so the
+ * Mirrors the firmware `polygon_t` byte layout (main/geometry/polygon.h) so the
  * configurator produces blobs the device accepts and decodes blobs it returns.
  *
  * Wire layout (ZONE_MAX_VERTICES = 12 → 56 bytes; see 3T-zone-configurator.md §4):

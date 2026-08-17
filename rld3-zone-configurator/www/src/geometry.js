@@ -156,6 +156,44 @@ export function pointInPolygon(pts, p) {
  * @param {{x:number,y:number}[]|null|undefined} masterVertices room polygon
  * @returns {boolean} true only when a master polygon exists AND p is outside it
  */
+function segmentsCross(p1, p2, p3, p4) {
+  const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2);
+  const d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/**
+ * Does polygon `inner` have any area outside polygon `outer`?
+ *
+ * True when a vertex of `inner` lies outside `outer`, or when their edges
+ * cross. For simple polygons those two together are exhaustive: if every
+ * vertex is inside and no edge crosses the boundary, the whole polygon is
+ * contained. Touching edges (collinear/shared) count as contained, which is
+ * the conservative direction here — it warns rather than reassures only when
+ * there is genuinely area on the far side.
+ *
+ * Returns false when either polygon is missing: "unknown" is not "outside",
+ * the same convention isTargetOutsideRoom() uses.
+ */
+export function hasAreaOutside(innerVerts, outerVerts) {
+  if (!Array.isArray(innerVerts) || innerVerts.length < 3) return false;
+  if (!Array.isArray(outerVerts) || outerVerts.length < 3) return false;
+
+  for (const v of innerVerts) {
+    if (!pointInPolygon(outerVerts, v)) return true;
+  }
+  for (let i = 0; i < innerVerts.length; i++) {
+    const a = innerVerts[i], b = innerVerts[(i + 1) % innerVerts.length];
+    for (let j = 0; j < outerVerts.length; j++) {
+      const c = outerVerts[j], e = outerVerts[(j + 1) % outerVerts.length];
+      if (segmentsCross(a, b, c, e)) return true;
+    }
+  }
+  return false;
+}
+
 export function isTargetOutsideRoom(pointAbs, masterVertices) {
   if (!Array.isArray(masterVertices) || masterVertices.length < 3) return false;
   return !pointInPolygon(masterVertices, pointAbs);

@@ -67,6 +67,34 @@ export function shouldClosePolygon(vertices, p, closeDist) {
   return Math.sqrt(dist2(vertices[0], p)) <= closeDist;
 }
 
+/**
+ * Midpoint and length of every edge of a closed polygon, in WORLD units (mm).
+ *
+ * Edge i runs vertices[i] → vertices[(i+1) % n], the same indexing nearestEdge()
+ * returns, so a caller can line the two up without translating.
+ *
+ * `dx`/`dy` are the edge vector, for orienting a label along the wall. A
+ * two-point "polygon" yields ONE edge, not two identical ones.
+ */
+export function edgeMetrics(vertices) {
+  if (!Array.isArray(vertices) || vertices.length < 2) return [];
+  const n = vertices.length;
+  const edges = n === 2 ? 1 : n;
+  const out = [];
+  for (let i = 0; i < edges; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % n];
+    out.push({
+      index: i,
+      mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      length: Math.sqrt(dist2(a, b)),
+      dx: b.x - a.x,
+      dy: b.y - a.y,
+    });
+  }
+  return out;
+}
+
 /** Insert a vertex after edge index `edge` (between edge and edge+1). */
 export function insertVertexAfter(vertices, edge, p) {
   const out = vertices.slice();

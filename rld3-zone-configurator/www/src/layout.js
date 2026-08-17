@@ -14,6 +14,7 @@
  */
 
 import { encodePolygon, validatePolygon, DEFAULT_MAX_VERTICES } from './polygon_codec.js';
+import { hasAreaOutside, pointInPolygon } from './geometry.js';
 import { encodeExclusion } from './exclusion_codec.js';
 import {
   ATTR_YAW_TENTHS, ATTR_INVERTED, ATTR_MOUNT_OFFSET_X_MM, ATTR_MOUNT_OFFSET_Y_MM,
@@ -48,6 +49,53 @@ function checkPoly(label, poly, maxVertices, errors) {
   if (poly == null) return;
   const { ok, errors: e } = validatePolygon(poly.vertices, { maxVertices });
   if (!ok) errors.push(`${label}: ${e.join('; ')}`);
+}
+
+/**
+ * PV-11 (Phase 11D). Advisory geometry checks that cannot make a layout
+ * invalid but change whether the room can count anybody.
+ *
+ * The important one: an entry/exit pair's OUTER layer must reach outside the
+ * master Room. Since 11D the tracker only counts a Portal crossing as a Room
+ * entry when the track was previously MEASURED outside the Room, and only
+ * counts an exit when a raw position lands outside it. A pair drawn wholly
+ * inside the room therefore tracks people perfectly and counts zero entries,
+ * forever, with nothing anywhere reporting a fault. The editor is the only
+ * place this is visible before it is installed.
+ *
+ * Separate from errors on purpose: this must not block provisioning. The
+ * tracker is safe either way, the cost is lost counting rather than a wrong
+ * count, and some doorways genuinely cannot be drawn any other way.
+ */
+export function layoutWarnings(layout) {
+  const warnings = [];
+  const master = layout?.master?.vertices;
+  if (!Array.isArray(master) || master.length < 3) return warnings;
+
+  layout.entryExit?.forEach((pair, i) => {
+    if (pair == null) return;
+
+    const outer = pair.outer?.vertices;
+    if (Array.isArray(outer) && outer.length >= 3 &&
+        !hasAreaOutside(outer, master)) {
+      warnings.push(
+        `entryExit[${i}].outer lies wholly inside the master zone — entries ` +
+        `through this doorway will never be counted (PV-11). Redraw it to ` +
+        `reach outside the room.`);
+    }
+
+    /* The long-standing companion expectation, surfaced in the same place:
+     * an inner layer entirely outside the room can never be reached. */
+    const inner = pair.inner?.vertices;
+    if (Array.isArray(inner) && inner.length >= 3 &&
+        !inner.some((v) => pointInPolygon(master, v))) {
+      warnings.push(
+        `entryExit[${i}].inner lies wholly outside the master zone — a ` +
+        `crossing into it can never be an entry into the room.`);
+    }
+  });
+
+  return warnings;
 }
 
 export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = {}) {
@@ -91,7 +139,7 @@ export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = 
     }
   });
 
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, warnings: layoutWarnings(layout) };
 }
 
 /* ----------------------------------------------------------------------------

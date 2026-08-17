@@ -49,7 +49,7 @@
             min-height: 48px; }
   /* Separates the Device (connection) group from the Edit (layout) group below. */
   .group-sep { border: none; border-top: 1px solid #2c3744; margin: 16px 0 4px; }
-  .ok { color: #4ade80; } .err { color: #fb7185; }
+  .ok { color: #4ade80; } .err { color: #fb7185; } .warn { color: #fbbf24; }
   #hint { position: absolute; left: 12px; bottom: 10px; color: #8a97a8;
           background: rgba(14,17,22,.8); padding: 4px 8px; border-radius: 6px; }
   #coords { position: absolute; right: 12px; top: 10px; color: #cbd5e1;
@@ -220,6 +220,7 @@
 
   <h2>Validation</h2>
   <div id="status">—</div>
+  <div id="pv11" class="warn" style="white-space:pre-line; margin-top:4px"></div>
 
   <!-- GEOMETRY ONLY — deliberately not called a backup. toolToJSON() captures the
        sensor mount + polygons + Occupancy Zone styles + exclusion rects and nothing else; per-zone tuning
@@ -252,7 +253,7 @@
 
 <script type="module">
 import { validatePolygon, DEFAULT_MAX_VERTICES } from '../src/polygon_codec.js';
-import { emptyLayout, layoutToJSON, layoutFromJSON } from '../src/layout.js';
+import { emptyLayout, layoutToJSON, layoutFromJSON, layoutWarnings } from '../src/layout.js';
 import { layoutToZ2mSets, createZ2mAdapter, POLY_KEY, EXCL_KEY } from '../src/z2m_adapter.js';
 import { OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES } from '../src/attributes.js';
 import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_load.js';
@@ -271,6 +272,7 @@ import {
 } from './viewport.js';
 import {
   nearestVertex, nearestEdge, shouldClosePolygon, insertVertexAfter, boundsOf,
+  edgeMetrics,
 } from './editing.js';
 
 // --- Zone registry: id → label, colour, category, and accessors into the layout -
@@ -638,15 +640,60 @@ function drawZone(z) {
     const pts = polys[z.id];
     if (!pts || pts.length === 0) return;
     drawPoly(pts, z.color, isActive, true);
-    if (isActive && mode === 'edit') drawHandles(pts, z.color);
+    if (isActive && mode === 'edit') { drawHandles(pts, z.color); drawEdgeLengths(pts); }
   } else {
     const r = rects[z.id]; // stored in SENSOR frame
     if (!r) return;
     // Sensor-frame axis-aligned rect → room-frame quad (rotates/flips with mount).
     const corners = rectRoomCorners(r);
     drawPoly(corners, z.color, isActive, true, true);
-    if (isActive && mode === 'edit') drawHandles(corners, z.color);
+    if (isActive && mode === 'edit') { drawHandles(corners, z.color); drawEdgeLengths(corners); }
   }
+}
+
+/*
+ * Wall lengths, drawn at each segment's midpoint while editing the active zone.
+ *
+ * A zone is drawn to scale but MEASURED nowhere — dragging a handle changed the
+ * shape with no number attached to it, so a wall could only be set by eye against
+ * the 500 mm grid. These labels make the drag quantitative: draw() already runs on
+ * every pointermove, so a length tracks the handle live with no extra plumbing.
+ *
+ * Room-frame mm for polygons. Exclusion rectangles are stored in SENSOR frame but
+ * their room-frame quad is a rotation of it, and rotation preserves length — so
+ * the same call is correct for both, and reads as the side length either way.
+ */
+const EDGE_LABEL_MIN_PX = 30;   // below this the text is longer than the wall: skip it
+
+function drawEdgeLengths(pts) {
+  ctx.save();
+  ctx.font = '600 11px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const e of edgeMetrics(pts)) {
+    const a = w2s(pts[e.index]);
+    const b = w2s(pts[(e.index + 1) % pts.length]);
+    if (Math.hypot(b.sx - a.sx, b.sy - a.sy) < EDGE_LABEL_MIN_PX) continue;
+
+    // Run the text ALONG the wall, but never upside down: fold the screen angle
+    // into (-90°, 90°]. Then lift it clear of the line so the edge stays visible.
+    let ang = Math.atan2(b.sy - a.sy, b.sx - a.sx);
+    if (ang > Math.PI / 2) ang -= Math.PI;
+    else if (ang <= -Math.PI / 2) ang += Math.PI;
+
+    const label = String(Math.round(e.length));
+    const m = w2s(e.mid);
+    const w = ctx.measureText(label).width;
+    ctx.save();
+    ctx.translate(m.sx, m.sy);
+    ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(17,22,29,0.82)';
+    ctx.fillRect(-w / 2 - 4, -19, w + 8, 14);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillText(label, 0, -12);
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 function drawPoly(pts, color, active, closed, dashed = false) {
@@ -959,7 +1006,21 @@ function norm(a, b) {
 }
 
 // --- Status / validation -------------------------------------------------------
+/* PV-11 and friends: advisory geometry that cannot make a layout invalid but
+ * decides whether the room will ever count anybody. Rendered on every status
+ * refresh — i.e. on every edit — because the failure it prevents is completely
+ * silent once provisioned: correct tracking, no error, and a count that never
+ * moves. */
+function refreshPv11() {
+  const el = document.getElementById('pv11');
+  if (!el) return;
+  let warns = [];
+  try { warns = layoutWarnings(appToLayout()); } catch { warns = []; }
+  el.textContent = warns.length ? warns.map((w) => '⚠ ' + w).join('\n') : '';
+}
+
 function refreshStatus() {
+  refreshPv11();
   const z = zoneById[activeId];
   const s = document.getElementById('status');
   if (z.kind === 'poly') {
@@ -1437,12 +1498,16 @@ document.getElementById('mqProvision').onclick = () => {
         msg = 'nothing to write — no changes from the device baseline';
       }
       if (plan.warnings.length) msg += '\n⚠ ' + plan.warnings.join('\n⚠ ');
+      const pv = layoutWarnings(appToLayout());
+      if (pv.length) msg += '\n⚠ ' + pv.join('\n⚠ ');
       setWrite(msg, cls);
       return;
     }
 
     // Confirm dialog: WRITE / SKIP(non-trivial) / warnings.
     const lines = [];
+    // PV-11 last chance: this is the point after which the geometry is live.
+    for (const w of layoutWarnings(appToLayout())) lines.push(`⚠ ${w}`);
     for (const s of plan.sets) lines.push(`WRITE  ${s.key}`);
     for (const s of plan.skipped) if (s.reason !== 'unchanged') lines.push(`SKIP   ${s.zone} (${s.reason})`);
     for (const w of plan.warnings) lines.push(`⚠ ${w}`);

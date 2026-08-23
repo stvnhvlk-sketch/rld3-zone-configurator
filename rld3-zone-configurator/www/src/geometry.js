@@ -7,17 +7,29 @@
  * room canvas is NOT an axis-aligned sensor-frame rectangle unless yaw is a
  * multiple of 90°, so it must be reprojected before it is written.
  *
- * Firmware forward transform (sensor → room), mount_angle.c / 3T-mounting.md:
- *   1. inversion: if inverted, negate X
- *   2. CCW yaw rotation:
+ * Firmware forward transform (sensor -> room), mount_angle.c / 3T-mounting.md:
+ *   1. ELEVATION: slant range -> true horizontal range (RLD3-031)
+ *   2. inversion: if inverted, negate X
+ *   3. CCW yaw rotation:
  *        x_room = xi*cos(yaw) - yi*sin(yaw)
  *        y_room = xi*sin(yaw) + yi*cos(yaw)
- *   i.e.  room = R(yaw) · Inv · sensor
  *
- * Inverse (room → sensor) = Inv · R(-yaw) · room  (Inv is its own inverse):
- *        xt =  x_room*cos(yaw) + y_room*sin(yaw)
- *        yt = -x_room*sin(yaw) + y_room*cos(yaw)
- *        x_sensor = inverted ? -xt : xt ;  y_sensor = yt
+ * Inverse (room -> sensor) reverses all three, elevation LAST.
+ *
+ * STEP 1 WAS MISSING HERE UNTIL 2026-08-22, and this comment used to describe
+ * the transform as inversion + rotation only while claiming to mirror
+ * mount_angle_apply(). It did not. The radar measures SLANT range to a target
+ * roughly 1 m below a wall mount, and the firmware converts that to the
+ * horizontal range a floor plan uses; a rotation-only inverse put every
+ * exclusion zone at the wrong radius.
+ *
+ * Measured on hardware: a zone drawn with its near edge at room 2553 mm was
+ * enforced at room 2349 mm -- 204 mm TOWARD the sensor, and the error grows as
+ * range falls (382 mm at 1.5 m, and it diverges as range approaches the mount
+ * height). The operator saw the suppressed region sitting "north of where
+ * drawn". The LD2450 itself was faithful to 1-7 mm on all four edges once the
+ * coordinate ENCODING was fixed the same night, which is what isolated this to
+ * the frame conversion.
  *
  * yaw is in tenths of a degree (deci-degrees), matching attr 0x0100
  * (ATTR_YAW_TENTHS); inverted is the bool from attr 0x0101.
@@ -29,28 +41,72 @@
  * this module to predict the device's exact rounding of a single coordinate.
  */
 
-/** Mounting config as read from the device (0x0100 / 0x0101). */
-/** @typedef {{ yawDeciDeg: number, inverted: boolean }} Mount */
+/** Mounting config as read from the device (0x0100 / 0x0101 / 0x0107). */
+/** @typedef {{ yawDeciDeg: number, inverted: boolean, heightMm: number }} Mount */
 
 function trig(yawDeciDeg) {
   const rad = (yawDeciDeg / 10) * (Math.PI / 180);
   return { sin: Math.sin(rad), cos: Math.cos(rad) };
 }
 
+/**
+ * Slant -> horizontal. Mirrors elevation_to_horizontal() in mount_angle.c.
+ *
+ * The sensor reports the straight-line distance to a target that is `heightMm`
+ * below it; a floor plan wants the horizontal distance. Scale radially by
+ * rho/R where R = sqrt(x^2+y^2) and rho = sqrt(R^2 - h^2).
+ *
+ * The `r2 <= h2` guard is NOT defensive tidiness -- it is copied from the
+ * firmware, which leaves points inside the height radius uncorrected because
+ * the horizontal range there is imaginary. It makes the pair a non-exact
+ * inverse for r < h; see horizontalToElevation().
+ */
+function elevationToHorizontal(x, y, h) {
+  if (!h) return { x, y };
+  const r2 = x * x + y * y;
+  const h2 = h * h;
+  if (r2 <= h2) return { x, y };
+  const R = Math.sqrt(r2);
+  if (R === 0) return { x, y };
+  const rho = Math.sqrt(r2 - h2);
+  return { x: (x * rho) / R, y: (y * rho) / R };
+}
+
+/**
+ * Horizontal -> slant. Mirrors horizontal_to_elevation() in mount_angle.c.
+ *
+ * Note the asymmetry, which is faithful to the firmware rather than a bug
+ * here: the forward direction refuses to correct inside the height radius but
+ * this one always scales, so a round trip is exact only for rho > 0 mapping
+ * out to r > h. Zones are authored metres away, so the region never arises in
+ * practice -- but a round-trip test that samples near the origin WILL see it,
+ * and should assert the firmware's behaviour rather than a clean identity.
+ */
+function horizontalToElevation(x, y, h) {
+  if (!h) return { x, y };
+  const rho2 = x * x + y * y;
+  if (rho2 === 0) return { x, y };
+  const rho = Math.sqrt(rho2);
+  const R = Math.sqrt(rho2 + h * h);
+  return { x: (x * R) / rho, y: (y * R) / rho };
+}
+
 /** Sensor frame → room frame (mirrors mount_angle_apply, in floating point). */
-export function sensorToRoom({ x, y }, { yawDeciDeg = 0, inverted = false } = {}) {
+export function sensorToRoom({ x, y }, { yawDeciDeg = 0, inverted = false, heightMm = 0 } = {}) {
   const { sin, cos } = trig(yawDeciDeg);
-  const xi = inverted ? -x : x;
-  const yi = y;
+  const e = elevationToHorizontal(x, y, heightMm);   // FIRST, as in the firmware
+  const xi = inverted ? -e.x : e.x;
+  const yi = e.y;
   return { x: xi * cos - yi * sin, y: xi * sin + yi * cos };
 }
 
 /** Room frame → sensor frame (inverse of the firmware transform). */
-export function roomToSensor({ x, y }, { yawDeciDeg = 0, inverted = false } = {}) {
+export function roomToSensor({ x, y }, { yawDeciDeg = 0, inverted = false, heightMm = 0 } = {}) {
   const { sin, cos } = trig(yawDeciDeg);
   const xt = x * cos + y * sin;
   const yt = -x * sin + y * cos;
-  return { x: inverted ? -xt : xt, y: yt };
+  const xs = inverted ? -xt : xt;
+  return horizontalToElevation(xs, yt, heightMm);    // LAST, as in the firmware
 }
 
 /** Round to integer mm, normalising negative zero to 0. */
@@ -79,6 +135,22 @@ export function roundPoint({ x, y }) {
  * @returns {{x1:number,y1:number,x2:number,y2:number}} sensor-frame AABB
  */
 export function roomRectToSensorBBox(roomRect, mount = {}) {
+  /*
+   * Four corners are enough, and that is not obvious once elevation is in play.
+   *
+   * With yaw alone the transform is linear, so corners bound the image exactly.
+   * The elevation correction is a RADIAL scale by R/rho that grows as range
+   * falls, so in principle the image of a straight edge can bow outside the
+   * hull of the transformed corners, which would silently under-cover -- an
+   * exclusion zone smaller than drawn.
+   *
+   * It was measured, not assumed: a 32-samples-per-edge version agrees with
+   * this one to the millimetre on every rectangle tried, including edges
+   * passing within the mount height of the sensor and rectangles straddling
+   * it. The corners are scaled least but start furthest out, and they win.
+   * The dense version is kept as a TEST (geometry.test.js) rather than as
+   * production code, so the assumption is defended without paying for it here.
+   */
   const corners = [
     { x: roomRect.x1, y: roomRect.y1 },
     { x: roomRect.x2, y: roomRect.y1 },

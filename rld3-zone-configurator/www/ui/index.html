@@ -152,6 +152,7 @@
   </div>
   <div class="row">
     <label>Origin X mm<input type="number" id="mountOffsetX" value="0" step="1" min="-10000" max="10000" title="The sensor's X position in room-space coordinates — choose a room-frame origin (e.g. a laser-measured corner) instead of the sensor. Set visually by dragging the sensor dot in Place Sensor mode; type here for an exact value. 0 (with Y also 0) disables the correction." /></label>
+    <label>Height mm<input type="number" id="mountHeight" value="0" step="1" min="0" max="3000" title="Sensor height ABOVE THE TARGET'S chest/torso in mm - not above the floor. The radar measures slant range; this converts it to true horizontal. For a 2 m mount over a seated adult use about 1000. 0 disables the correction. You mounted it, so you set it - same as Origin X/Y." /></label>
     <label>Origin Y mm<input type="number" id="mountOffsetY" value="0" step="1" min="-10000" max="10000" title="The sensor's Y position in room-space coordinates — see Origin X." /></label>
   </div>
   <div style="font-size:11px; color:#8a97a8; margin:-2px 0 6px">
@@ -272,6 +273,7 @@ import {
 } from './viewport.js';
 import {
   nearestVertex, nearestEdge, shouldClosePolygon, insertVertexAfter, boundsOf,
+  axisLock, clipSegmentToRect,
   edgeMetrics,
 } from './editing.js';
 
@@ -357,7 +359,11 @@ const SWEET_ENVELOPE = clippedSector(SENSOR_CONE_SWEET_DEG);
 const FULL_ENVELOPE = physicalEnvelope();
 
 // --- App state -----------------------------------------------------------------
-const mount = { yawDeciDeg: 0, inverted: false };
+// heightMm feeds the elevation correction in geometry.js (slant -> horizontal
+// range). It is READ from the device and never written back: there is no input
+// for it here, so anything this tool sent would be a guess. 0 disables the
+// correction, matching the firmware when no height is configured.
+const mount = { yawDeciDeg: 0, inverted: false, heightMm: 0 };
 const sensor = { x: 0, y: 0 };   // sensor position in ABSOLUTE room frame (§11)
 const polys = {};            // id → [{x,y}] ABSOLUTE-frame vertices for poly zones
 const rects = {};            // id → {x1,y1,x2,y2} SENSOR-frame rect for excl zones
@@ -664,6 +670,7 @@ function drawZone(z) {
  * the same call is correct for both, and reads as the side length either way.
  */
 const EDGE_LABEL_MIN_PX = 30;   // below this the text is longer than the wall: skip it
+const EDGE_LABEL_INSET_PX = 26; // keeps the chip (and its lift off the line) on canvas
 
 function drawEdgeLengths(pts) {
   ctx.save();
@@ -673,7 +680,25 @@ function drawEdgeLengths(pts) {
   for (const e of edgeMetrics(pts)) {
     const a = w2s(pts[e.index]);
     const b = w2s(pts[(e.index + 1) % pts.length]);
-    if (Math.hypot(b.sx - a.sx, b.sy - a.sy) < EDGE_LABEL_MIN_PX) continue;
+
+    // Label the midpoint of the VISIBLE run, not the true midpoint: zoomed in,
+    // the true midpoint leaves the canvas while the wall still crosses it, and
+    // the number disappeared exactly when it was most wanted.
+    //
+    // Two clips, not one. The canvas clip decides whether there is anything to
+    // label at all, which keeps the rule a strict SUPERSET of the old one --
+    // no wall that used to carry a number loses it. The inset clip then places
+    // the chip clear of the border when the wall reaches that far in; when it
+    // does not, the visible midpoint is used and a little overhang is accepted.
+    // Insetting alone was measured dropping a label the old code did draw.
+    const vis = clipSegmentToRect(a, b, { x0: 0, y0: 0, x1: cv.width, y1: cv.height });
+    if (!vis) continue;                                   // wall is off-screen
+    if (Math.hypot(vis.b.sx - vis.a.sx, vis.b.sy - vis.a.sy) < EDGE_LABEL_MIN_PX) continue;
+
+    const safe = clipSegmentToRect(a, b, {
+      x0: EDGE_LABEL_INSET_PX, y0: EDGE_LABEL_INSET_PX,
+      x1: cv.width - EDGE_LABEL_INSET_PX, y1: cv.height - EDGE_LABEL_INSET_PX,
+    }) || vis;
 
     // Run the text ALONG the wall, but never upside down: fold the screen angle
     // into (-90°, 90°]. Then lift it clear of the line so the edge stays visible.
@@ -682,7 +707,7 @@ function drawEdgeLengths(pts) {
     else if (ang <= -Math.PI / 2) ang += Math.PI;
 
     const label = String(Math.round(e.length));
-    const m = w2s(e.mid);
+    const m = { sx: (safe.a.sx + safe.b.sx) / 2, sy: (safe.a.sy + safe.b.sy) / 2 };
     const w = ctx.measureText(label).width;
     ctx.save();
     ctx.translate(m.sx, m.sy);
@@ -837,7 +862,11 @@ cv.addEventListener('pointerdown', (e) => {
       const closeDist = pxToWorld(vp, 10);
       if (shouldClosePolygon(draft, wp, closeDist)) return finishDraft();
       if (draft.length < DEFAULT_MAX_VERTICES) {
-        draft.push(round(wp));
+        // Shift squares the new point against the previous one, so a wall is
+        // straight as it is DRAWN rather than corrected afterwards.
+        const p = (e.shiftKey && draft.length > 0)
+          ? axisLock(wp, [draft[draft.length - 1]]) : wp;
+        draft.push(round(p));
         gestureUndo = () => { draft.pop(); };
       }
       draw();
@@ -924,7 +953,8 @@ cv.addEventListener('pointermove', (e) => {
       polys[activeId] = polyDragOrig.verts.map((v) => ({ x: v.x + dx, y: v.y + dy }));
       draw();
     } else if (selVert >= 0) {
-      polys[activeId][selVert] = round(evWorld(e)); draw();
+      lastDragWorld = evWorld(e);
+      applyVertexDrag(e.shiftKey);
     }
   } else if (kind === 'rect' && rects[activeId]) {
     const r = rects[activeId];
@@ -985,7 +1015,57 @@ window.addEventListener('keydown', (e) => {
     const p = polys[activeId];
     if (p && p.length > 3) { p.splice(selVert, 1); selVert = -1; draw(); }
   }
+  // Arrow nudge: the only way to place a vertex EXACTLY. A drag quantises to
+  // whatever pixel the mouse landed on -- at a working zoom that is several mm,
+  // which is how a wall ends up 17 mm out of true. One axis at a time, so a
+  // nudge can never disturb an alignment already achieved on the other.
+  else if (mode === 'edit' && selVert >= 0 && NUDGE_KEY[e.key]) {
+    const pts = polys[activeId];
+    if (pts && pts[selVert]) {
+      e.preventDefault();                       // else the panel scrolls
+      const step = e.shiftKey ? NUDGE_COARSE_MM : NUDGE_FINE_MM;
+      const [dx, dy] = NUDGE_KEY[e.key];
+      pts[selVert] = { x: pts[selVert].x + dx * step, y: pts[selVert].y + dy * step };
+      draw();
+    }
+  }
+  // Squaring is judged live: pressing or releasing Shift mid-drag must re-apply
+  // to the position the pointer is already at.
+  else if (e.key === 'Shift' && dragging && selVert >= 0) applyVertexDrag(true);
 });
+
+/* Room frame: +y is forward/up on the canvas, so Up must ADD y (viewport.js
+ * flips y for drawing). Getting this from the screen sense would invert it. */
+const NUDGE_KEY = {
+  ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1],
+};
+const NUDGE_FINE_MM = 10;
+const NUDGE_COARSE_MM = 100;   // Shift+Arrow; no clash with Shift+drag (different gesture)
+
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift' && dragging && selVert >= 0) applyVertexDrag(false);
+});
+
+/*
+ * Vertex drag, optionally squared against the vertex's neighbours (Shift).
+ *
+ * Split out of the pointermove handler because Shift is not only read there:
+ * pressing or releasing Shift with the mouse held still fires no pointer event,
+ * so without the keydown/keyup hooks below the constraint would appear to do
+ * nothing until the mouse was jiggled -- which reads as a broken feature.
+ */
+let lastDragWorld = null;      // last pointer position, for re-applying Shift
+
+function applyVertexDrag(locked) {
+  const pts = polys[activeId];
+  if (!pts || selVert < 0 || !lastDragWorld) return;
+  const n = pts.length;
+  const anchors = n >= 2
+    ? [pts[(selVert - 1 + n) % n], pts[(selVert + 1) % n]] : [];
+  const p = locked ? axisLock(lastDragWorld, anchors) : lastDragWorld;
+  pts[selVert] = round(p);
+  draw();
+}
 
 function finishDraft() {
   const z = zoneById[activeId];
@@ -1356,6 +1436,14 @@ document.getElementById('panApplyErr').onclick = () => {
   panUpdateAlignError();                  // refresh the reversal note immediately
 };
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
+document.getElementById('mountHeight').oninput = (e) => {
+  /* Operator-settable, exactly like yaw and the offsets. The device did not
+   * mount itself; the person who put it on the wall knows this number. An
+   * earlier draft made it read-only "because ZC has no input for it", which was
+   * circular - it had no input because none had been written. */
+  mount.heightMm = Math.max(0, Math.min(3000, Math.round(parseFloat(e.target.value) || 0)));
+  draw();
+};
 document.getElementById('mountOffsetX').oninput = (e) => { sensor.x = Math.round(parseFloat(e.target.value) || 0); draw(); };
 document.getElementById('mountOffsetY').oninput = (e) => { sensor.y = Math.round(parseFloat(e.target.value) || 0); draw(); };
 
@@ -1364,7 +1452,12 @@ document.getElementById('mountOffsetY').oninput = (e) => { sensor.y = Math.round
 function toolToJSON() {
   return JSON.stringify({
     version: 3, tool: 'rld3-configurator',
-    sensor: { x: sensor.x, y: sensor.y, yawDeciDeg: mount.yawDeciDeg, inverted: mount.inverted },
+    sensor: {
+      x: sensor.x, y: sensor.y, yawDeciDeg: mount.yawDeciDeg, inverted: mount.inverted,
+      // Saved so an offline edit reprojects zones with the same geometry the
+      // device uses. Operator-settable, and written back like the offsets.
+      heightMm: mount.heightMm,
+    },
     polys, rects, presenceStyles,
   }, null, 2);
 }
@@ -1373,6 +1466,14 @@ function toolFromJSON(text) {
   if ((o.version !== 2 && o.version !== 3) || !o.sensor) throw new Error('not a supported v2/v3 tool layout');
   sensor.x = Math.round(o.sensor.x || 0); sensor.y = Math.round(o.sensor.y || 0);
   mount.yawDeciDeg = o.sensor.yawDeciDeg || 0; mount.inverted = !!o.sensor.inverted;
+  /* Only overwrite the height when the file actually carries one. A layout
+   * saved before 2026-08-22 has no heightMm, and `|| 0` would zero whatever the
+   * device just reported -- silently switching the elevation correction off and
+   * putting every exclusion zone back at the wrong radius. */
+  if (o.sensor.heightMm != null) {
+    mount.heightMm = Number(o.sensor.heightMm) || 0;
+    document.getElementById('mountHeight').value = mount.heightMm;
+  }
   document.getElementById('yaw').value = mount.yawDeciDeg / 10;
   document.getElementById('inverted').checked = mount.inverted;
   document.getElementById('mountOffsetX').value = sensor.x;
@@ -1625,6 +1726,14 @@ document.getElementById('mqRead').onclick = () => {
       mount.inverted = layout.mount.inverted;
       document.getElementById('yaw').value = mount.yawDeciDeg / 10;
       document.getElementById('inverted').checked = mount.inverted;
+    }
+
+    /* Height is adopted independently of mount LOADED, which gates on yaw AND
+     * inverted. It is a separate attribute (0x0107) that may be reported when
+     * those are not, and the geometry is wrong without it. */
+    if (layout.mount.heightMm != null) {
+      mount.heightMm = layout.mount.heightMm;
+      document.getElementById('mountHeight').value = mount.heightMm;
     }
 
     loadedZoneStates = states;

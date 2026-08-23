@@ -95,6 +95,71 @@ export function edgeMetrics(vertices) {
   return out;
 }
 
+/*
+ * Axis lock — hold Shift while dragging to square a wall up.
+ *
+ * A generic axis constraint locks movement to the axis you started the drag on.
+ * That is the wrong anchor for a polygon: what the operator wants is not "move
+ * horizontally", it is "make THIS WALL horizontal". So the candidates are drawn
+ * from the vertex's NEIGHBOURS -- sharing a neighbour's y makes the edge to that
+ * neighbour horizontal, sharing its x makes it vertical -- and the nearest
+ * candidate to the free pointer wins. Both adjacent walls are offered at once,
+ * so one gesture can square either of them without choosing a mode first.
+ *
+ * Measured motivation: a hand-drawn room came out with a 3120 mm wall rising
+ * 17 mm over its length (0.31 deg off) and a corner at 90.265 deg. Close every
+ * time, exact never.
+ *
+ * `anchors` is a list because Draw mode has only the previous point to work
+ * from, while Edit mode has both neighbours. Empty list = nothing to square
+ * against, so the point is returned untouched rather than guessed at.
+ */
+export function axisLock(p, anchors) {
+  if (!Array.isArray(anchors) || anchors.length === 0) return { x: p.x, y: p.y };
+  let best = { x: p.x, y: p.y };
+  let bestD2 = Infinity;
+  for (const q of anchors) {
+    if (!q) continue;
+    for (const cand of [{ x: p.x, y: q.y }, { x: q.x, y: p.y }]) {
+      const d2 = dist2(cand, p);
+      if (d2 < bestD2) { bestD2 = d2; best = cand; }
+    }
+  }
+  return best;
+}
+
+/*
+ * Clip segment a->b to a rectangle (Liang-Barsky), in SCREEN space.
+ *
+ * Wall labels sit at the segment's midpoint, which works until you zoom in:
+ * the midpoint leaves the canvas while the wall itself still crosses it, and
+ * the number vanishes exactly when the detail you zoomed in for is on screen.
+ * Clipping first and labelling the midpoint of the VISIBLE run keeps it in
+ * view -- the standard map-labelling fix.
+ *
+ * Returns null when the segment misses the rectangle entirely (nothing to
+ * label), so the caller skips it rather than drawing off-canvas.
+ */
+export function clipSegmentToRect(a, b, rect) {
+  const dx = b.sx - a.sx;
+  const dy = b.sy - a.sy;
+  let t0 = 0;
+  let t1 = 1;
+  const clip = (p, q) => {
+    if (p === 0) return q >= 0;            // parallel: inside iff not outside
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else { if (r < t0) return false; if (r < t1) t1 = r; }
+    return true;
+  };
+  if (!clip(-dx, a.sx - rect.x0) || !clip(dx, rect.x1 - a.sx)
+      || !clip(-dy, a.sy - rect.y0) || !clip(dy, rect.y1 - a.sy)) return null;
+  return {
+    a: { sx: a.sx + t0 * dx, sy: a.sy + t0 * dy },
+    b: { sx: a.sx + t1 * dx, sy: a.sy + t1 * dy },
+  };
+}
+
 /** Insert a vertex after edge index `edge` (between edge and edge+1). */
 export function insertVertexAfter(vertices, edge, p) {
   const out = vertices.slice();

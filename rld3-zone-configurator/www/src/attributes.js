@@ -20,6 +20,7 @@ export const ATTR_INVERTED = 0x0101; // bool
 // of the sensor. (0,0) = disabled, the default.
 export const ATTR_MOUNT_OFFSET_X_MM = 0x0108; // int16, mm
 export const ATTR_MOUNT_OFFSET_Y_MM = 0x0109; // int16, mm
+export const ATTR_MOUNT_HEIGHT_MM   = 0x0107; // uint16, mm above the target's torso
 
 /* Zone polygon provisioning. Read-back works (firmware W1); these are RW —
  * the configurator loads device geometry via device_load.layoutFromReports. */

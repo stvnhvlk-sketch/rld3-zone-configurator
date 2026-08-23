@@ -43,6 +43,10 @@ export const ZONE_STYLE_KEY = Array.from({ length: PRESENCE_ZONE_COUNT }, (_, n)
 export const MOUNT_KEY = {
   yaw: 'yaw_tenths', inverted: 'inverted',
   offsetXMm: 'mount_offset_x_mm', offsetYMm: 'mount_offset_y_mm',
+  // READ-ONLY here. The geometry layer needs the mount height to convert slant
+  // range to horizontal (geometry.js), but this tool has no input for it and
+  // must never write it back -- see layoutToZ2mSets().
+  heightMm: 'mount_height_mm',
 };
 
 /**
@@ -62,6 +66,21 @@ export function layoutToZ2mSets(layout, { maxVertices = DEFAULT_MAX_VERTICES } =
   sets.push({ key: MOUNT_KEY.inverted, value: !!layout.mount.inverted });
   sets.push({ key: MOUNT_KEY.offsetXMm, value: layout.mount.offsetXMm ?? 0 });
   sets.push({ key: MOUNT_KEY.offsetYMm, value: layout.mount.offsetYMm ?? 0 });
+  /*
+   * Height is written like any other mounting fact. The device did not mount
+   * itself: the operator chose the height and the offsets, and both belong to
+   * the same installation record.
+   *
+   * An earlier version withheld it, reasoning that this tool "has no input for
+   * it" -- circular, since the input simply had not been written yet, and
+   * inconsistent with Origin X/Y which are operator-set here and written
+   * through. Corrected 2026-08-22.
+   *
+   * `?? 0` is still the right default and is NOT the hazard it looks like: 0
+   * means "no elevation correction", which is exactly what an unconfigured
+   * mount should do, and matches the firmware's own convention.
+   */
+  sets.push({ key: MOUNT_KEY.heightMm, value: layout.mount.heightMm ?? 0 });
 
   addPoly(POLY_KEY.master, layout.master);
   for (let n = 0; n < PRESENCE_ZONE_COUNT; n++) {

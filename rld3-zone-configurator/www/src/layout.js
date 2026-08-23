@@ -18,6 +18,7 @@ import { hasAreaOutside, pointInPolygon } from './geometry.js';
 import { encodeExclusion } from './exclusion_codec.js';
 import {
   ATTR_YAW_TENTHS, ATTR_INVERTED, ATTR_MOUNT_OFFSET_X_MM, ATTR_MOUNT_OFFSET_Y_MM,
+  ATTR_MOUNT_HEIGHT_MM,
   ATTR_POLY_MASTER, ATTR_POLY_PRES, ATTR_POLY_EZ,
   ATTR_EXCL, PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
   OCCUPANCY_ZONE_STYLE, isOccupancyZoneStyle, occupancyZoneStyleCode, attrZcfg,
@@ -28,12 +29,17 @@ import {
  * architecture already uses (3T-mounting.md §6). */
 const MOUNT_OFFSET_MM_MAX = 10000;
 
+/* Mount height bound (mm) — mirrors MOUNT_HEIGHT_MM_MAX in mount_angle_nvs.c.
+ * 0 means "not configured", which disables the elevation correction, exactly
+ * as it does in the firmware. */
+const MOUNT_HEIGHT_MM_MAX = 3000;
+
 export const LAYOUT_VERSION = 2;
 
 /** A fresh, empty layout. Undefined zones are simply absent (not written). */
 export function emptyLayout() {
   return {
-    mount: { yawDeciDeg: 0, inverted: false, offsetXMm: 0, offsetYMm: 0 },
+    mount: { yawDeciDeg: 0, inverted: false, offsetXMm: 0, offsetYMm: 0, heightMm: 0 },
     master: null, // { vertices: [...] } or null
     presence: new Array(PRESENCE_ZONE_COUNT).fill(null),
     entryExit: new Array(ENTRY_EXIT_PAIRS).fill(null), // { inner:{vertices}, outer:{vertices} }
@@ -116,6 +122,11 @@ export function validateLayout(layout, { maxVertices = DEFAULT_MAX_VERTICES } = 
     if (v !== undefined && (!Number.isInteger(v) || v < -MOUNT_OFFSET_MM_MAX || v > MOUNT_OFFSET_MM_MAX)) {
       errors.push(`mount.${k} ${v} outside [-${MOUNT_OFFSET_MM_MAX}, ${MOUNT_OFFSET_MM_MAX}]`);
     }
+  }
+  // Height is unsigned and, unlike the offsets, is never written back.
+  const h = layout?.mount?.heightMm;
+  if (h !== undefined && (!Number.isInteger(h) || h < 0 || h > MOUNT_HEIGHT_MM_MAX)) {
+    errors.push(`mount.heightMm ${h} outside [0, ${MOUNT_HEIGHT_MM_MAX}]`);
   }
 
   checkPoly('master', layout.master, maxVertices, errors);
@@ -207,6 +218,7 @@ export function layoutToWritePlan(layout, { maxVertices = DEFAULT_MAX_VERTICES }
   steps.push({ attrId: ATTR_INVERTED, label: 'inverted', type: 'bool', value: !!layout.mount.inverted });
   steps.push({ attrId: ATTR_MOUNT_OFFSET_X_MM, label: 'mount offset X', type: 'int16', value: layout.mount.offsetXMm ?? 0 });
   steps.push({ attrId: ATTR_MOUNT_OFFSET_Y_MM, label: 'mount offset Y', type: 'int16', value: layout.mount.offsetYMm ?? 0 });
+  steps.push({ attrId: ATTR_MOUNT_HEIGHT_MM, label: 'mount height', type: 'uint16', value: layout.mount.heightMm ?? 0 });
 
   // 2. Polygons (room frame).
   poly(ATTR_POLY_MASTER, 'master', layout.master);

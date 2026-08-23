@@ -134,6 +134,12 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
   if (MOUNT_KEY.offsetXMm in reports) layout.mount.offsetXMm = Number(reports[MOUNT_KEY.offsetXMm]);
   if (MOUNT_KEY.offsetYMm in reports) layout.mount.offsetYMm = Number(reports[MOUNT_KEY.offsetYMm]);
 
+  /* Mount height (0x0107). Not part of the mount LOADED state: it is an input
+   * to the geometry transform, not something this tool authors or writes back.
+   * Absent leaves 0, which disables the elevation correction exactly as the
+   * firmware does when no height is configured. */
+  if (MOUNT_KEY.heightMm in reports) layout.mount.heightMm = Number(reports[MOUNT_KEY.heightMm]);
+
   const master = loadPoly(reports, POLY_KEY.master, maxVertices, warnings);
   zoneStates.master = master.state;
   layout.master = master.poly;
@@ -169,6 +175,11 @@ export function layoutFromReports(reports = {}, { maxVertices = DEFAULT_MAX_VERT
 export function deviceReadKeys() {
   return [
     MOUNT_KEY.yaw, MOUNT_KEY.inverted, MOUNT_KEY.offsetXMm, MOUNT_KEY.offsetYMm,
+    // Read but never written (see layoutToZ2mSets). Without it in THIS list the
+    // device is never asked, heightMm stays 0, and the elevation correction in
+    // geometry.js silently never engages -- the plumbing would look complete
+    // and do nothing.
+    MOUNT_KEY.heightMm,
     POLY_KEY.master,
     ...POLY_KEY.presence,
     ...POLY_KEY.ez.flatMap((p) => [p.inner, p.outer]),

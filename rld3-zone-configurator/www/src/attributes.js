@@ -53,11 +53,11 @@ export const OCCUPANCY_ZONE_STYLE = Object.freeze({
   CHAIR: 'chair',
   COUCH: 'couch',
   TABLE: 'table',
-  WALKWAY: 'walkway',
 });
 export const OCCUPANCY_ZONE_STYLES = Object.freeze(Object.values(OCCUPANCY_ZONE_STYLE));
 export const OCCUPANCY_ZONE_STYLE_CODE = Object.freeze({
-  default: 0, bed: 1, chair: 2, couch: 3, table: 4, walkway: 5,
+  default: 0, bed: 1, chair: 2, couch: 3, table: 4,
+  // 5 (walkway) and 6 (transit_only) retired 2026-08-23; never reused.
 });
 export function isOccupancyZoneStyle(style) {
   return OCCUPANCY_ZONE_STYLES.includes(style);

@@ -133,7 +133,6 @@
         <option value="chair">Chair</option>
         <option value="couch">Couch</option>
         <option value="table">Table</option>
-        <option value="walkway">Walkway</option>
       </select>
     </label>
   </div>
@@ -1320,8 +1319,7 @@ const STYLE_NOTE = {
   bed: 'Resting/sleeping area; occupancy and traversal allowed.',
   chair: 'Known sitting location; occupancy and traversal allowed.',
   couch: 'Known sitting/lying location; occupancy and traversal allowed.',
-  table: 'Physical obstacle: new-track start forbidden, occupancy restricted, traversal forbidden.',
-  walkway: 'Normal traversable path; start, occupancy, and traversal allowed.',
+  table: 'Somewhere people sit still for a long time; start, occupancy and traversal all allowed.',
 };
 function activePresenceIndex() {
   return activeId.startsWith('pres') ? parseInt(activeId.slice(4), 10) : -1;

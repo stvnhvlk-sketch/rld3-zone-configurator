@@ -53,14 +53,27 @@ export const OCCUPANCY_ZONE_STYLE = Object.freeze({
   CHAIR: 'chair',
   COUCH: 'couch',
   TABLE: 'table',
+  TRANSIT_ONLY: 'transit_only',
 });
 export const OCCUPANCY_ZONE_STYLES = Object.freeze(Object.values(OCCUPANCY_ZONE_STYLE));
 export const OCCUPANCY_ZONE_STYLE_CODE = Object.freeze({
-  default: 0, bed: 1, chair: 2, couch: 3, table: 4,
-  // 5 (walkway) and 6 (transit_only) retired 2026-08-23; never reused.
+  default: 0, bed: 1, chair: 2, couch: 3, table: 4, transit_only: 6,
+  // 5 (walkway) retired 2026-08-23, burned, never reused. transit_only was
+  // retired alongside it and RESTORED 2026-08-24 at its ORIGINAL value 6, so a
+  // stored zone keeps the meaning it already had. Codes are NOT contiguous:
+  // never derive one from an array index.
 });
 export function isOccupancyZoneStyle(style) {
   return OCCUPANCY_ZONE_STYLES.includes(style);
+}
+/** Wire code -> style name. NOT an array: the codes are not contiguous (5 is
+ * burned), so indexing a names array by wire value would map 5 to transit_only
+ * and 6 to undefined. Returns undefined for an unknown or retired code, which
+ * callers must treat as invalid. */
+export const OCCUPANCY_ZONE_STYLE_FROM_CODE = Object.freeze(
+  Object.fromEntries(Object.entries(OCCUPANCY_ZONE_STYLE_CODE).map(([n, c]) => [c, n])));
+export function occupancyZoneStyleFromCode(code) {
+  return OCCUPANCY_ZONE_STYLE_FROM_CODE[code];
 }
 export function occupancyZoneStyleCode(style) {
   if (!isOccupancyZoneStyle(style)) throw new Error(`invalid occupancy zone style: ${style}`);

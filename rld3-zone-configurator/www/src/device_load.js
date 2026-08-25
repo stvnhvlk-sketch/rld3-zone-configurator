@@ -28,7 +28,7 @@ import {
 } from './z2m_adapter.js';
 import {
   PRESENCE_ZONE_COUNT, ENTRY_EXIT_PAIRS, EXCLUSION_ZONE_COUNT,
-  OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES,
+  OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES, occupancyZoneStyleFromCode,
 } from './attributes.js';
 
 export const ZONE_STATE = Object.freeze({
@@ -85,8 +85,11 @@ function loadExclusion(reports, key, warnings) {
 function loadStyle(reports, key, warnings) {
   if (!(key in reports)) return { state: ZONE_STATE.UNKNOWN, style: OCCUPANCY_ZONE_STYLE.DEFAULT };
   const raw = reports[key];
+  // Wire codes are NOT contiguous - 5 (walkway) is retired and burned. This
+  // indexed OCCUPANCY_ZONE_STYLES by the raw code, which would have decoded a
+  // stored 5 as transit_only and a stored 6 as undefined.
   const style = typeof raw === 'number'
-    ? OCCUPANCY_ZONE_STYLES[raw]
+    ? occupancyZoneStyleFromCode(raw)
     : String(raw).toLowerCase();
   if (!OCCUPANCY_ZONE_STYLES.includes(style)) {
     warnings.push(`${key}: invalid Occupancy Zone style "${raw}" — using default in the editor`);

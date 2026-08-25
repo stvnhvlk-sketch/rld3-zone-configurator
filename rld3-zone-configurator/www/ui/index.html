@@ -133,6 +133,7 @@
         <option value="chair">Chair</option>
         <option value="couch">Couch</option>
         <option value="table">Table</option>
+        <option value="transit_only">Transit only</option>
       </select>
     </label>
   </div>
@@ -1320,6 +1321,10 @@ const STYLE_NOTE = {
   chair: 'Known sitting location; occupancy and traversal allowed.',
   couch: 'Known sitting/lying location; occupancy and traversal allowed.',
   table: 'Somewhere people sit still for a long time; start, occupancy and traversal all allowed.',
+  transit_only: 'Nothing may START here; walking through is normal and still reported. ' +
+    'Best for places a person cannot be — inside a wall, over a stairwell, out a window. ' +
+    '⚠ If you aim one at reflections it WILL go stale: measured phantom locations ' +
+    'shared zero cells between 2026-08-18 and 2026-08-22.',
 };
 function activePresenceIndex() {
   return activeId.startsWith('pres') ? parseInt(activeId.slice(4), 10) : -1;

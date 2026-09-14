@@ -105,6 +105,30 @@
   </div>
   <div id="mqStatus">not connected</div>
 
+  <!-- Restart device (contract: _Documentation/restart/e2e-minimal-contract.md).
+       Uses the same broker fields above. One versioned layout is written as a
+       transaction and proven by generation/hash read-back; live view draws
+       observation state, never bare points. -->
+  <h2>Restart device</h2>
+  <div class="row">
+    <label>Base topic<input id="rsBase" value="zigbee2mqtt" style="width:110px" title="Zigbee2MQTT base topic: zigbee2mqtt (production) or z2m-sandbox (anguirus sandbox)" /></label>
+    <label>Sensor<input id="rsDev" value="" placeholder="Z2M friendly name" style="width:130px" /></label>
+    <label>WS URL<input id="rsWsUrl" value="" placeholder="ws://host:port or /mqtt" style="width:150px" title="Broker WebSocket. Empty: ws://Host:Port from the MQTT Server fields. A path such as /mqtt uses this page's own origin (same-origin proxy, as the HA add-on does)." /></label>
+    <button id="rsConnect">Connect</button>
+  </div>
+  <div class="row">
+    <label>Lens height mm<input type="number" id="rsSensorHeight" value="0" min="0" max="3000" step="1" style="width:70px" title="Measured floor-to-lens height. The restart stores this and the scatterer height (lens height minus Height mm above); it never stores the derived value alone." /></label>
+    <label>Generation<input type="number" id="rsGeneration" value="1" min="1" step="1" style="width:70px" title="Layout generation sent with the transaction; the device echoes it back on success." /></label>
+    <label>Frozen &ge;<input type="number" id="rsFrozen" value="50" min="16" step="1" style="width:56px" title="Identical-frame count at which a return is drawn as a sensor hold rather than a person. A quiet seated person measured up to 15 identical frames; keep this well above." /></label>
+  </div>
+  <div class="row">
+    <button id="rsStatus">Read status</button>
+    <button id="rsWrite">Write layout (transaction)</button>
+    <button id="rsReadBack">Read back &rarr; editor</button>
+    <button id="rsLive">Live view: OFF</button>
+  </div>
+  <div id="rsMsg" style="white-space:pre-wrap; font-family: ui-monospace, monospace; font-size:12px">restart: not connected</div>
+
   <hr class="group-sep" />
 
   <h2>Mode</h2>
@@ -261,6 +285,9 @@ import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_loa
 import { markProvisioned } from '../src/layout_edit.js';
 import { planFromLayouts, confirmPlan } from '../src/provision_glue.js';
 import { mqttConnect } from './mqtt_ws.js';
+import { createRestartClient, classifySlot, RestartRejected } from '../src/restart_client.js';
+import { editorToRestart, restartToEditor } from '../src/restart_layout.js';
+import { encodeLayout as encodeRestartLayout, decodeLayout as decodeRestartLayout, layoutHash as restartLayoutHash } from '../src/layout_codec.js';
 import {
   sensorToRoom, roomToSensor, pointInPolygon, isTargetOutsideRoom,
 } from '../src/geometry.js';
@@ -437,6 +464,7 @@ function draw() {
   for (const z of ZONES) drawZone(z);
   drawDraft();
   drawLiveTargets();
+  drawRestartLive();
   drawAlignTarget();
   drawAxisLegend();
   refreshStatus();
@@ -533,6 +561,51 @@ function drawLiveTargets() {
     ctx.fillStyle = '#f87171';
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillText('outside room', s.sx + 16, s.sy + 4);
+  }
+}
+
+// --- Restart live layer (contract §3) ------------------------------------------
+// One decoded live_frame at a time; each slot is drawn by its classification,
+// never as a bare point. A frozen return (the LD2450's 400-frame hold) is the
+// one the baseline drew as a person; here it gets its own glyph and count.
+let rsFrame = null;
+let rsRetired = null;   // { x, y, token, reason, until } - last retirement marker
+const RS_STYLE = {
+  supported: { fill: '#22d3ee', stroke: '#0e7490', dash: [] },
+  candidate: { fill: null, stroke: '#22d3ee', dash: [] },
+  coasting:  { fill: null, stroke: '#9ca3af', dash: [4, 3] },
+  raw:       { fill: '#9ca3af', stroke: '#6b7280', dash: [] },
+  rejected:  { fill: null, stroke: '#f87171', dash: [3, 3] },
+  ghost:     { fill: null, stroke: '#e879f9', dash: [2, 2] },
+  frozen:    { fill: '#fb923c', stroke: '#c2410c', dash: [] },
+};
+function drawRestartLive() {
+  if (!rsFrame || !Array.isArray(rsFrame.slots)) return;
+  const threshold = Number(document.getElementById('rsFrozen').value) || 50;
+  ctx.font = '11px system-ui, sans-serif';
+  rsFrame.slots.forEach((slot, i) => {
+    const kind = classifySlot(slot, { frozenThresholdFrames: threshold });
+    if (kind === 'absent' || slot.x_mm == null) return;
+    const s = w2s({ x: slot.x_mm, y: slot.y_mm });
+    const st = RS_STYLE[kind];
+    ctx.setLineDash(st.dash); ctx.lineWidth = 1.5; ctx.strokeStyle = st.stroke;
+    ctx.beginPath();
+    if (kind === 'frozen') ctx.rect(s.sx - 6, s.sy - 6, 12, 12); else ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);
+    if (st.fill) { ctx.fillStyle = st.fill; ctx.fill(); }
+    ctx.stroke(); ctx.setLineDash([]);
+    let label = `${i}`;
+    if (slot.track_present) label += ` t${slot.track_token}`;
+    if (kind === 'frozen') label += ` frozen ${slot.unchanged_frames}`;
+    else if (kind === 'rejected') label += ` ${slot.spatial_reason}`;
+    else if (kind === 'ghost') label += ` ghost ${slot.ghost_reason}`;
+    else if (kind === 'coasting') label += ' coasting';
+    ctx.fillStyle = st.stroke; ctx.fillText(label, s.sx + 9, s.sy + 4);
+  });
+  if (rsRetired && Date.now() < rsRetired.until) {
+    const s = w2s(rsRetired);
+    ctx.setLineDash([2, 2]); ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(s.sx, s.sy, 12, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#fbbf24'; ctx.fillText(`retired t${rsRetired.token} ${rsRetired.reason}`, s.sx + 15, s.sy - 8);
   }
 }
 
@@ -1938,6 +2011,110 @@ cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';   // match the default 
 syncZoneButtons();
 resize();
 fitView();
+// --- Restart device panel ----------------------------------------------------------
+let rsClient = null, rsMqtt = null, rsLiveOn = false, rsLastSlots = [];
+const rsMsg = document.getElementById('rsMsg');
+const setRs = (t, cls) => { rsMsg.textContent = t; rsMsg.className = cls || ''; };
+function rsSummary(st) {
+  return `session ${st.boot_session} rev ${st.interface_revision} - layout gen ${st.config_generation} hash ${st.config_hash} `
+    + `tgen ${st.transform_generation} - ${st.config_state}${st.config_state === 'rejected' ? ` (${st.config_reason} ${st.config_detail}@${st.config_offset})` : ''} `
+    + `- stream ${st.stream_state} - live ${st.live_view}`;
+}
+document.getElementById('rsConnect').onclick = async () => {
+  const host = document.getElementById('mqHost').value.trim();
+  const port = document.getElementById('mqPort').value.trim();
+  const user = document.getElementById('mqUser').value;
+  const pass = document.getElementById('mqPass').value;
+  const device = document.getElementById('rsDev').value.trim();
+  const baseTopic = document.getElementById('rsBase').value.trim() || 'zigbee2mqtt';
+  const wsField = document.getElementById('rsWsUrl').value.trim();
+  const wsUrl = wsField.startsWith('/') ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${wsField}`
+    : (wsField || `ws://${host}:${port}`);
+  if (!device) { setRs('restart: name the sensor first', 'err'); return; }
+  setRs(`restart: connecting to ${wsUrl} ...`);
+  try {
+    if (rsMqtt) rsMqtt.end();
+    const client = await mqttConnect({ url: wsUrl, username: user || undefined, password: pass || undefined });
+    const handlers = new Map();
+    client.onMessage((tp, m) => { for (const h of handlers.get(tp) || []) h(typeof m === 'string' ? m : new TextDecoder().decode(m)); });
+    const transport = {
+      publish: (t, p) => client.publish(t, p),
+      subscribe: (t, h) => { handlers.set(t, [...(handlers.get(t) || []), h]); client.subscribe(t); },
+    };
+    rsMqtt = client;
+    rsClient = createRestartClient({ transport, device, baseTopic });
+    rsClient.onLiveFrame((f) => {
+      if (!rsLiveOn) return;   // a cached republish while off is not a live frame
+      rsFrame = f;
+      if (f.retired_token) {
+        const prev = rsLastSlots.find((sl) => sl && sl.track_present && sl.track_token === f.retired_token && sl.x_mm != null);
+        if (prev) rsRetired = { x: prev.x_mm, y: prev.y_mm, token: f.retired_token, reason: f.retired_reason, until: Date.now() + 3000 };
+      }
+      rsLastSlots = f.slots || [];
+      const threshold = Number(document.getElementById('rsFrozen').value) || 50;
+      const kinds = (f.slots || []).map((sl) => classifySlot(sl, { frozenThresholdFrames: threshold })).join(' ');
+      setRs(`live seq ${f.frame_sequence} tgen ${f.transform_generation} stream ${f.stream_state} - ${kinds}`);
+      draw();
+    });
+    rsClient.onState((obj) => { if (obj.live_view != null) { rsLiveOn = obj.live_view === 'ON'; rsUpdateLiveBtn(); } });
+    // Connect only proves the broker; the device is claimed by its own status read.
+    const st = await rsClient.readStatus();
+    setRs(`connected - ${rsSummary(st)}`, 'ok');
+  } catch (e) {
+    rsClient = null;
+    setRs(`restart: ${e.message}`, 'err');
+  }
+};
+document.getElementById('rsStatus').onclick = async () => {
+  if (!rsClient) { setRs('restart: not connected', 'err'); return; }
+  try { setRs(rsSummary(await rsClient.readStatus())); } catch (e) { setRs(`restart: ${e.message}`, 'err'); }
+};
+document.getElementById('rsWrite').onclick = async () => {
+  if (!rsClient) { setRs('restart: not connected', 'err'); return; }
+  const generation = Number(document.getElementById('rsGeneration').value) || 1;
+  const sensorHeightMm = Number(document.getElementById('rsSensorHeight').value) || 0;
+  let blob;
+  try {
+    const restart = editorToRestart(appToLayout(), { generation, sensorHeightMm });
+    blob = encodeRestartLayout(restart);
+  } catch (e) { setRs(`restart: layout not encodable - ${e.message}`, 'err'); return; }
+  const hash = (restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0');
+  setRs(`writing generation ${generation} hash ${hash} ...`);
+  try {
+    const r = await rsClient.writeAndVerify(blob, {
+      generation,
+      onProgress: (p) => setRs(`generation ${generation} hash ${hash}: ${p.phase}${p.index ? ` ${p.index}/${p.total}` : ''}`),
+    });
+    setRs(`device runs generation ${r.generation} hash ${r.hash} (transform generation ${r.transformGeneration}); read-back identical`, 'ok');
+    document.getElementById('rsGeneration').value = generation + 1;
+  } catch (e) {
+    setRs(e instanceof RestartRejected ? `device rejected: ${e.message}` : `restart: ${e.message}`, 'err');
+  }
+};
+document.getElementById('rsReadBack').onclick = async () => {
+  if (!rsClient) { setRs('restart: not connected', 'err'); return; }
+  try {
+    const blob = await rsClient.readLayout({ onProgress: (p) => setRs(`reading ${p.index}/${p.total}`) });
+    const restart = decodeRestartLayout(blob);
+    const editor = restartToEditor(restart);
+    const tool = { version: 3, sensor: { x: editor.mount.offsetXMm, y: editor.mount.offsetYMm, yawDeciDeg: editor.mount.yawDeciDeg,
+      inverted: editor.mount.inverted, heightMm: editor.mount.heightMm }, polys: {}, rects: {}, presenceStyles: [] };
+    if (editor.master) tool.polys.master = editor.master.vertices;
+    editor.presence.forEach((z, n) => { if (z) { tool.polys['pres' + n] = z.vertices; } tool.presenceStyles[n] = z ? z.style : OCCUPANCY_ZONE_STYLE.DEFAULT; });
+    editor.exclusions.forEach((r, n) => { if (r) tool.rects['excl' + n] = r; });
+    toolFromJSON(JSON.stringify(tool));
+    document.getElementById('rsSensorHeight').value = editor.mount.sensorHeightMm;
+    document.getElementById('rsGeneration').value = restart.generation + 1;
+    setRs(`editor now shows the device's generation ${restart.generation} (hash ${(restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0')})`, 'ok');
+  } catch (e) { setRs(`restart: ${e.message}`, 'err'); }
+};
+function rsUpdateLiveBtn() { document.getElementById('rsLive').textContent = `Live view: ${rsLiveOn ? 'ON' : 'OFF'}`; }
+document.getElementById('rsLive').onclick = () => {
+  if (!rsClient) { setRs('restart: not connected', 'err'); return; }
+  rsLiveOn = !rsLiveOn; rsClient.setLiveView(rsLiveOn); rsUpdateLiveBtn();
+  if (!rsLiveOn) { rsFrame = null; draw(); }
+  setRs(`live view ${rsLiveOn ? 'ON - the device turns it off itself after 15 min' : 'OFF'}`);
+};
 </script>
 </body>
 </html>

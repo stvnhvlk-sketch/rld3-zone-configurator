@@ -93,7 +93,10 @@ export function validateLayout(l) {
     if (![0, 1, 2].includes(r.policy) || ![0, 1, 2, 3, 4, 5].includes(r.style)
       || ![0, 1, 2, 3].includes(r.boundaryRole) || ![0, 1].includes(r.reflectionProfile)
       || !Number.isInteger(r.spatialId) || r.spatialId < 0 || r.spatialId > 255) throw new LayoutError('enum', i);
-    checkPolygon(r.polygon, r.active, i);
+    if (r.boundaryRole && r.polygon.length === 2) {
+      r.polygon.forEach(([x,y]) => { if (!i16ok(x)||!i16ok(y)) throw new LayoutError('coordinate',i); });
+      if (!u16ok(r.doorToleranceMm ?? 0)) throw new LayoutError('range',i);
+    } else checkPolygon(r.polygon, r.active, i);
     checkName(r.name, i);
   });
   if (![0, 1, 2].includes(l.nativeMode)) throw new LayoutError('enum', 'native');
@@ -142,6 +145,8 @@ export function encodeLayout(l) {
     view.setUint8(off + 5, r.reflectionProfile);
     for (let i = 0; i < r.name.length; i++) view.setUint8(off + 6 + i, r.name.charCodeAt(i));
     putPolygon(view, off + 6 + LAYOUT_NAME_BYTES, r.polygon);
+    if (r.boundaryRole && r.polygon.length === 2)
+      view.setUint16(off + 6 + LAYOUT_NAME_BYTES + 10, r.doorToleranceMm ?? 0, true);
     off += LAYOUT_RECORD_BYTES;
   }
   view.setUint8(off, l.nativeMode);
@@ -162,7 +167,7 @@ export function layoutHash(buf) {
   return crc32(buf.subarray(0, LAYOUT_BODY_BYTES));
 }
 
-function getPolygon(view, off, which) {
+function getPolygon(view, off, which, door = false) {
   const count = view.getUint8(off);
   if (view.getUint8(off + 1) !== 0) throw new LayoutError('reserved', which);
   if (count > LAYOUT_MAX_VERTICES) throw new LayoutError('vertex_count', which);
@@ -171,6 +176,7 @@ function getPolygon(view, off, which) {
     const x = view.getInt16(off + 2 + 4 * i, true);
     const y = view.getInt16(off + 4 + 4 * i, true);
     if (i < count) polygon.push([x, y]);
+    else if (door && count === 2 && i === 2 && y === 0) { /* tolerance field */ }
     else if (x !== 0 || y !== 0) throw new LayoutError('reserved', which);
   }
   return polygon;
@@ -216,7 +222,8 @@ export function decodeLayout(buf) {
     if (nul < 0) throw new LayoutError('name', i);
     for (let k = nul; k < LAYOUT_NAME_BYTES; k++) if (bytes[k] !== 0) throw new LayoutError('name', i);
     r.name = String.fromCharCode(...bytes.subarray(0, nul));
-    r.polygon = getPolygon(view, off + 6 + LAYOUT_NAME_BYTES, i);
+    r.polygon = getPolygon(view, off + 6 + LAYOUT_NAME_BYTES, i, !!r.boundaryRole);
+    if (r.boundaryRole && r.polygon.length === 2) r.doorToleranceMm = view.getUint16(off + 6 + LAYOUT_NAME_BYTES + 10, true);
     off += LAYOUT_RECORD_BYTES;
   }
   l.nativeMode = view.getUint8(off);
@@ -235,7 +242,7 @@ export function decodeLayout(buf) {
 export function derivedTransform(l) {
   return {
     yawTenths: l.yawTenths, inverted: l.inverted,
-    heightMm: l.scattererHeightMm > 0 ? l.sensorHeightMm - l.scattererHeightMm : 0,
+    heightMm: 0, // D-24: retained layout heights never affect room positions.
     offsetXmm: l.originXmm, offsetYmm: l.originYmm,
   };
 }

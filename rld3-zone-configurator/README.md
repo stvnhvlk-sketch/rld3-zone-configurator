@@ -33,6 +33,31 @@ on port **1884**), Connect, then draw → Provision. See the configurator
 
 ## What's new
 
+Updated: 2026-09-20 — this list had stopped at 0.5.0 while `config.yaml` was
+at 0.6.5; the 0.5.4–0.6.5 entries below are reconstructed from the source
+commits. `publish.sh --check` (run 2026-09-20) confirms the published repo
+matches this tree at 0.6.5.
+
+### 0.6.5 — restart interface revision 1 (2026-09-13)
+- `www/` resynced for the `layout_codec` changes that accept the restart
+  firmware's interface revision 1 (`a5c693d`). This is the first add-on
+  version that talks to both firmwares.
+
+### 0.6.3 / 0.6.4 — zone styles settled (2026-08-23..25)
+- `WALKWAY` and the original `TRANSIT_ONLY` retired — a hand-aimed filter is a
+  guess (`a8400e0`); `TRANSIT_ONLY` restored with a split scope and a
+  `FORBIDDEN` start (`18d5364`). The policy table is in
+  `_Documentation/zone-styles-design.md`.
+
+### 0.6.2 — 0.6.0 back-ported (2026-08-17..22)
+- The **Occupancy Zone style selector** (0.6.0) had been built only in the
+  published repo; back-ported into `configurator/` (`2f0058d`) and the add-on
+  resynced from source (`167790a`). `publish.sh` exists so this cannot recur.
+
+### 0.5.4 — no-cache (2026-08-07)
+- HTML/JS served with `Cache-Control: no-cache`: an updated add-on showed the
+  old page until a hard refresh.
+
 ### 0.5.0 — yaw is the aim you set
 
 - **"Apply suggested yaw" is gone.** Yaw is now the aim you author in the layout,
@@ -55,5 +80,11 @@ on port **1884**), Connect, then draw → Provision. See the configurator
 ## Updating
 
 The web assets are vendored under `www/`. After changing
-[`../configurator/`](../configurator/), run `./sync-www.sh`, bump `version` in
-[`config.yaml`](config.yaml), and rebuild/update the add-on.
+[`../configurator/`](../configurator/): `./sync-www.sh`, bump `version` in
+[`config.yaml`](config.yaml), add a line above, then **`./publish.sh`** — which
+syncs, verifies, commits and pushes to the repository Home Assistant actually
+installs from (`github.com/stvnhvlk-sketch/rld3-zone-configurator`). Pushing
+RLD3Target alone changes nothing in HA; the pair diverged three times before
+the script existed (its header has the dates). `ci.sh` runs `sync-www.sh
+--check` (source ⇄ `www/`); `publish.sh --check` is the source ⇄ published
+check and is run by hand.

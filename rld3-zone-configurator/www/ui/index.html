@@ -88,38 +88,19 @@
     <label>User<input id="mqUser" value="" placeholder="mqtt user" style="width:78px" /></label>
     <label>Pass<input id="mqPass" type="password" style="width:78px" /></label>
   </div>
-  <!-- Connect sits with the Sensor it targets; the remaining device commands form
-       the group below, all reporting to the one shared message window. Top-down:
-       connect → read/write → delete → monitor. Delete is a device op, not an edit. -->
-  <div class="row">
-    <label>Sensor<input id="mqDev" value="" placeholder="Z2M friendly name" style="width:130px" /></label>
-    <button id="mqConnect">Connect</button>
-  </div>
-  <div class="row">
-    <button id="mqRead">Read from Sensor</button>
-    <button id="mqProvision">Write to Sensor</button>
-  </div>
-  <div class="row">
-    <button id="deleteZone">Delete from Sensor</button>
-    <button id="mqLive">Live view: OFF</button>
-  </div>
-  <div id="mqStatus">not connected</div>
-
   <!-- Restart device (contract: _Documentation/restart/e2e-minimal-contract.md).
        Uses the same broker fields above. One versioned layout is written as a
        transaction and proven by generation/hash read-back; live view draws
        observation state, never bare points. -->
   <h2>Restart device</h2>
   <div class="row">
-    <label>Base topic<input id="rsBase" value="zigbee2mqtt" style="width:110px" title="Zigbee2MQTT base topic: zigbee2mqtt (production) or z2m-sandbox (anguirus sandbox)" /></label>
+    <label>Base topic<input id="rsBase" value="z2m-sandbox" style="width:110px" title="Zigbee2MQTT base topic: zigbee2mqtt (production) or z2m-sandbox (anguirus sandbox)" /></label>
     <label>Sensor<input id="rsDev" value="" placeholder="Z2M friendly name" style="width:130px" /></label>
     <label>WS URL<input id="rsWsUrl" value="" placeholder="ws://host:port or /mqtt" style="width:150px" title="Broker WebSocket. Empty: ws://Host:Port from the MQTT Server fields. A path such as /mqtt uses this page's own origin (same-origin proxy, as the HA add-on does)." /></label>
     <button id="rsConnect">Connect</button>
   </div>
   <div class="row">
-    <label>Lens height mm<input type="number" id="rsSensorHeight" value="0" min="0" max="3000" step="1" style="width:70px" title="Measured floor-to-lens height. The restart stores this and the scatterer height (lens height minus Height mm above); it never stores the derived value alone." /></label>
     <label>Generation<input type="number" id="rsGeneration" value="1" min="1" step="1" style="width:70px" title="Layout generation sent with the transaction; the device echoes it back on success." /></label>
-    <label>Frozen &ge;<input type="number" id="rsFrozen" value="50" min="16" step="1" style="width:56px" title="Identical-frame count at which a return is drawn as a sensor hold rather than a person. A quiet seated person measured up to 15 identical frames; keep this well above." /></label>
   </div>
   <div class="row">
     <button id="rsStatus">Read status</button>
@@ -127,7 +108,25 @@
     <button id="rsReadBack">Read back &rarr; editor</button>
     <button id="rsLive">Live view: OFF</button>
   </div>
+  <label><input type="checkbox" id="rsRawMarker" /> Show raw position (faint cross)</label>
+  <p>Dots use display positions when available. Track status: ○ normal · △ suspect · ◇ ghost.
+    The inner square still means frozen. Step 2 measures raw positions.</p>
+  <details>
+    <summary>Supply health since boot</summary>
+    <p>Read supply to see undervoltage now, latched undervoltage, minimum sampled mV and dip count. Reboot resets these four values. Check availability and calibration before interpreting them. Very short dips can be missed.</p>
+    <button id="rsSupply">Read supply</button>
+    <button id="rsSupplyArmClear">Clear development history...</button>
+    <button id="rsSupplyClear">Confirm development clear (10 s)</button>
+    <label>Meter reading (mV)<input id="rsSupplyReference" type="number" min="1000" max="6600" step="1" placeholder="5000" /></label>
+    <button id="rsSupplyCalibrate">Calibrate supply</button>
+    <p>Measure at the board under its own load. Calibration takes at least three seconds; read supply again to check completion. No automatic polling. Production refuses history clear; since-boot health resets only at reboot.</p>
+    <pre id="rsSupplyResult">No supply read requested.</pre>
+  </details>
   <div id="rsMsg" style="white-space:pre-wrap; font-family: ui-monospace, monospace; font-size:12px">restart: not connected</div>
+  <div id="rsLiveStatus" role="status"></div>
+  <div id="rsOccupancy" role="status">Room occupancy: waiting for live snapshot</div>
+  <div id="rsZoneStates" role="status"></div>
+  <div id="rsLastEvent" role="status"></div>
 
   <hr class="group-sep" />
 
@@ -138,9 +137,6 @@
     <button data-mode="sensor">Place Sensor</button>
     <button data-mode="align">You Are Here</button>
     <button data-mode="pan" class="on">Pan</button>
-    <!-- Mirrors the Clear dot button down in the align panel (~56 lines away):
-         create and remove belong within reach of each other. -->
-    <button id="alignClear2" title="Remove the You Are Here dot">Clear dot</button>
   </div>
   <div class="row">
     <button id="finish">Finish (Enter)</button>
@@ -150,14 +146,16 @@
   <h2>Zone</h2>
   <div id="zones"></div>
   <div id="zoneStyleRow" class="row" style="display:none; margin-top:8px">
-    <label>Occupancy style
+    <label>Zone policy / style
       <select id="zoneStyle">
+        <option id="unsupportedStyle" value="unsupported" hidden>Imported combination (preserved)</option>
         <option value="default">Default</option>
         <option value="bed">Bed</option>
         <option value="chair">Chair</option>
         <option value="couch">Couch</option>
         <option value="table">Table</option>
-        <option value="transit_only">Transit only</option>
+        <option value="transit_only">Transit only (TZ)</option>
+        <option value="impossible">Impossible (IZ)</option>
       </select>
     </label>
   </div>
@@ -176,7 +174,6 @@
   </div>
   <div class="row">
     <label>Origin X mm<input type="number" id="mountOffsetX" value="0" step="1" min="-10000" max="10000" title="The sensor's X position in room-space coordinates — choose a room-frame origin (e.g. a laser-measured corner) instead of the sensor. Set visually by dragging the sensor dot in Place Sensor mode; type here for an exact value. 0 (with Y also 0) disables the correction." /></label>
-    <label>Height mm<input type="number" id="mountHeight" value="0" step="1" min="0" max="3000" title="Sensor height ABOVE THE TARGET'S chest/torso in mm - not above the floor. The radar measures slant range; this converts it to true horizontal. For a 2 m mount over a seated adult use about 1000. 0 disables the correction. You mounted it, so you set it - same as Origin X/Y." /></label>
     <label>Origin Y mm<input type="number" id="mountOffsetY" value="0" step="1" min="-10000" max="10000" title="The sensor's Y position in room-space coordinates — see Origin X." /></label>
   </div>
   <div style="font-size:11px; color:#8a97a8; margin:-2px 0 6px">
@@ -193,6 +190,14 @@
        "Pan" is reserved for the MAP navigation mode above — the two used to
        collide in this same sidebar. The motor primitive stays pan_jog/pan_stop
        on the wire (it names the mechanism); the UI names the goal. -->
+  <div class="row">
+    <button id="renameElement">Rename selected</button>
+    <label id="spatialIdRow">Spatial ID<input id="spatialId" type="number" min="1" max="255" /></label>
+    <button id="repairId">Set ID</button>
+  </div>
+  <div id="nameMessage" role="status"></div>
+  <p id="maskNote">Whether masking frees one of the three LD2450 report slots is unverified.</p>
+  <div id="recordsLeft" role="status"></div>
   <h2>Yaw Align</h2>
   <!-- U+21BA/21BB are the standard Unicode rotate glyphs. An icon font
        (Material rotate_left/rotate_right) would render more crisply but needs
@@ -203,7 +208,6 @@
     <button id="panCCWf" class="rot" title="Rotate the sensor counter-clockwise by the Fine angle — seen from above, the same orientation as the map">↺</button>
     <button id="panCWf"  class="rot" title="Rotate the sensor clockwise by the Fine angle — seen from above, the same orientation as the map">↻</button>
     <button id="panCWc"  class="rot" title="Rotate the sensor clockwise by the Coarse angle — seen from above, the same orientation as the map">↻↻</button>
-    <button id="panStop" title="Stop the motor immediately" style="color:#fb7185">■</button>
   </div>
   <div class="row">
     <span style="color:#8a97a8; font-size:11px">↺ ↻ rotation seen from above — same orientation as the map</span>
@@ -241,11 +245,30 @@
   <div class="row" style="gap:8px; align-items:center">
     <button id="alignClear" title="Remove the You Are Here dot">Clear dot</button>
   </div>
+  <div id="restartDoorEditor" >
+  <b>Door segment</b><br>
+  <label>Wall <input id="doorWall" value="A" maxlength="1"></label>
+  <label>Start along wall (mm) <input id="doorStart" type="number" min="0" value="0"></label>
+  <label>End along wall (mm) <input id="doorEnd" type="number" min="1" value="800"></label>
+  <label id="doorToleranceRow">Tolerance (mm) <input id="doorTolerance" type="number" min="0" max="65535" value="100"></label>
+  <button id="doorDraw">Draw door (two wall clicks)</button><button id="doorAdd">Add from distances</button>
+  <button id="doorRedraw">Redraw selected</button><button id="doorDelete">Delete selected door</button>
+  <p>Wall letters follow the saved room corners. The dot marks 0 mm; arrows point toward increasing distance.</p>
+  <div id="doorMessage"></div>
+</div>
+<div id="restartHeld" >
+  <button id="yawNewCheck">Clear held result / start new check</button>
+  <div id="yawHeld" role="status" style="font-size:20px; white-space:pre-line"></div>
+  <div id="yawWarning" role="status"></div>
+  </div>
   <div id="alignStatus" style="font-family: ui-monospace, monospace; font-size:12px; background:#11161d; border:1px solid #232b36; border-radius:6px; padding:6px; margin-bottom:6px; white-space:pre-line">yaw angle: place "You Are Here", then stand where the sensor can see you</div>
 
+  <div id="restartSurvey" >
+    <label>Settled spread ≤ °<input id="yawSpread" type="number" value="6" min="0.1" step="0.1" /></label>
+    <p>Settled means 12 distinct usable frames, peak-to-peak bearing spread within this tolerance. Default 6° is a display choice based on the zone 2 capture, not an accuracy claim. Silence clears only the current reading after 1.5 s. The first settled result stays held until you clear it or start a new check; walk back to read it.</p>
+  </div>
   <h2>Validation</h2>
   <div id="status">—</div>
-  <div id="pv11" class="warn" style="white-space:pre-line; margin-top:4px"></div>
 
   <!-- GEOMETRY ONLY — deliberately not called a backup. toolToJSON() captures the
        sensor mount + polygons + Occupancy Zone styles + exclusion rects and nothing else; per-zone tuning
@@ -257,7 +280,6 @@
   <div class="row">
     <button id="export" title="Save the LAYOUT: sensor mount, polygons, Occupancy Zone styles, and exclusion rects. Does NOT capture device tuning (entry/exit frames, hold_min, smoothing, persistence, miss grace, auto reset).">Export Layout JSON</button>
     <button id="import" title="Load a layout previously exported here. Restores geometry and mount only — device tuning is untouched.">Import Layout JSON</button>
-    <button id="z2m">Preview write commands (debug)</button>
   </div>
   <div style="font-size:11px; opacity:.75; margin-bottom:6px">
     Captures mount + zone geometry + Occupancy Zone style. Device tuning (entry/exit frames, hold_min,
@@ -270,6 +292,9 @@
   <canvas id="cv"></canvas>
   <div id="coords">room —, — mm · sensor —, — mm</div>
   <div id="legend">
+    <span style="color:#cbd5e1">Room</span><span style="color:#56b4e9">Zone · style</span>
+    <span style="color:#e69f00">TZ ///</span><span style="color:#cc79a7">IZ ×</span>
+    <span style="color:#009e73">Sensor mask - -</span><span style="color:#f0e442">Door → inside</span>
     <span><i style="background:#7dd3fc"></i>optimal ±45°</span>
     <span><i style="background:#fbbf24"></i>extended ±60° · reduced</span>
   </div>
@@ -277,19 +302,20 @@
 </div>
 
 <script type="module">
+import { PALETTE, FROZEN_FRAMES, CHOICES, choiceFor, kindOf, defaultName, checkName, nextSpatialId, checkSpatialIds } from '../src/elements.js';
 import { validatePolygon, DEFAULT_MAX_VERTICES } from '../src/polygon_codec.js';
-import { emptyLayout, layoutToJSON, layoutFromJSON, layoutWarnings } from '../src/layout.js';
-import { layoutToZ2mSets, createZ2mAdapter, POLY_KEY, EXCL_KEY } from '../src/z2m_adapter.js';
-import { OCCUPANCY_ZONE_STYLE, OCCUPANCY_ZONE_STYLES } from '../src/attributes.js';
-import { layoutFromReports, ZONE_STATE, deviceReadKeys } from '../src/device_load.js';
-import { markProvisioned } from '../src/layout_edit.js';
-import { planFromLayouts, confirmPlan } from '../src/provision_glue.js';
+import { emptyLayout } from '../src/layout.js';
+import { OCCUPANCY_ZONE_STYLE } from '../src/attributes.js';
 import { mqttConnect } from './mqtt_ws.js';
+import { createYawWindow, alignmentJog } from '../src/commissioning.js';
 import { createRestartClient, classifySlot, RestartRejected } from '../src/restart_client.js';
+import { displayPoint, trackStatus } from '../src/live_display.js';
 import { editorToRestart, restartToEditor } from '../src/restart_layout.js';
+import { drawWallGuides } from '../src/wall_guides.js';
+import { wallDoor, assertDoorsDisjoint, doorInterval, projectWall, doorFromPoints, doorNormal, moveDoor } from '../src/door_layout.js';
 import { encodeLayout as encodeRestartLayout, decodeLayout as decodeRestartLayout, layoutHash as restartLayoutHash } from '../src/layout_codec.js';
 import {
-  sensorToRoom, roomToSensor, pointInPolygon, isTargetOutsideRoom,
+  sensorToRoom, roomToSensor, pointInPolygon,
 } from '../src/geometry.js';
 import {
   SENSOR_RANGE_R, SENSOR_RANGE_X, SENSOR_CONE_SWEET_DEG, SENSOR_FOV_FULL_DEG,
@@ -301,37 +327,16 @@ import {
 import {
   nearestVertex, nearestEdge, shouldClosePolygon, insertVertexAfter, boundsOf,
   axisLock, clipSegmentToRect,
-  edgeMetrics,
+  edgeMetrics, distToSegment,
 } from './editing.js';
 
-// --- Zone registry: id → label, colour, category, and accessors into the layout -
-// Labels are DISPLAY-ONLY 1-based (installer-facing): "Presence 1" == wire index 0.
-// The `id` strings (pres0, ez0_in, excl0…) remain 0-based, ZC-internal-only ids —
-// they map through POLY_KEY/EXCL_KEY (z2m_adapter.js) to the 1-based Z2M topics
-// (poly_pres_1, Phase N), and are otherwise unrelated to firmware logs, NVS keys
-// (pres_0), or the attribute map, which all stay 0-based. Never renumber ids —
-// presentation only. `cat` drives the toolbar grouping (blank line between
-// categories; no category headings by request).
+// Internal ids index editor geometry; human identity comes from saved names/IDs.
 const ZONES = [
-  { id: 'master', label: 'Room', color: '#ffd24a', kind: 'poly', cat: 'master' },
-  { id: 'pres0', label: 'Presence 1', color: '#4ade80', kind: 'poly', cat: 'presence' },
-  { id: 'pres1', label: 'Presence 2', color: '#22d3ee', kind: 'poly', cat: 'presence' },
-  { id: 'pres2', label: 'Presence 3', color: '#60a5fa', kind: 'poly', cat: 'presence' },
-  { id: 'pres3', label: 'Presence 4', color: '#a78bfa', kind: 'poly', cat: 'presence' },
-  { id: 'pres4', label: 'Presence 5', color: '#f472b6', kind: 'poly', cat: 'presence' },   // V2.1 Delta B
-  { id: 'pres5', label: 'Presence 6', color: '#fbbf24', kind: 'poly', cat: 'presence' },
-  { id: 'pres6', label: 'Presence 7', color: '#fb923c', kind: 'poly', cat: 'presence' },
-  { id: 'pres7', label: 'Presence 8', color: '#34d399', kind: 'poly', cat: 'presence' },
-  { id: 'ez0_in', label: 'EZ1 Inner', color: '#fb7185', kind: 'poly', cat: 'ez' },
-  { id: 'ez0_out', label: 'EZ1 Outer', color: '#f43f5e', kind: 'poly', cat: 'ez' },
-  { id: 'ez1_in', label: 'EZ2 Inner', color: '#fda4af', kind: 'poly', cat: 'ez' },
-  { id: 'ez1_out', label: 'EZ2 Outer', color: '#e11d48', kind: 'poly', cat: 'ez' },
-  { id: 'excl0', label: 'Exclude 1', color: '#94a3b8', kind: 'rect', cat: 'exclude' },
-  { id: 'excl1', label: 'Exclude 2', color: '#cbd5e1', kind: 'rect', cat: 'exclude' },
-  { id: 'excl2', label: 'Exclude 3', color: '#64748b', kind: 'rect', cat: 'exclude' },
+  {id:'master',label:'Room',color:PALETTE.room,kind:'poly',cat:'room'},
+  ...Array.from({length:12},(_,n)=>({id:`pres${n}`,label:'Unused',color:PALETTE.unused,kind:'poly',cat:'zone'})),
+  ...Array.from({length:3},(_,n)=>({id:`excl${n}`,label:`Mask ${n+1}`,color:PALETTE.mask,kind:'rect',cat:'mask'})),
 ];
-const zoneById = Object.fromEntries(ZONES.map((z) => [z.id, z]));
-
+const zoneById = Object.fromEntries(ZONES.map(z=>[z.id,z]));
 // LD2450 coverage (SENSOR frame, mm), shown as two nested regions:
 //
 //   SWEET SPOT  — ±45° cone (adaptive_filter.h FILTER_CONE_HALF_ANGLE_DEG),
@@ -385,16 +390,21 @@ function physicalEnvelope() {
 const SWEET_ENVELOPE = clippedSector(SENSOR_CONE_SWEET_DEG);
 const FULL_ENVELOPE = physicalEnvelope();
 
-// --- App state -----------------------------------------------------------------
-// heightMm feeds the elevation correction in geometry.js (slant -> horizontal
-// range). It is READ from the device and never written back: there is no input
-// for it here, so anything this tool sent would be a guess. 0 disables the
-// correction, matching the firmware when no height is configured.
+let rsClient = null, rsMqtt = null, rsLiveOn = false, rsLastSlots = [], rsConnectionEpoch=0;
+// --- App state: carried heights are metadata only.
+let rsPose = null, rsPoseProblem = 'read back layout to establish the device pose', rsMarkerDevice = '', rsMarkerBase = '';
+let rsPoseEpoch = 0;
+const yawWindow = createYawWindow();
+const slotNames = new Array(12).fill(null);
+const slotIds = new Array(12).fill(null), slotStyleCodes = new Array(12).fill(null), slotDetails = new Array(12).fill(null);
+let roomName = 'Room', maskNames = ['Mask 1','Mask 2','Mask 3'], restartMetadata = null;
+let sensorHeightMm = 0, scattererHeightMm = 0;
+const slotPolicies = new Array(12).fill(null);
 const mount = { yawDeciDeg: 0, inverted: false, heightMm: 0 };
 const sensor = { x: 0, y: 0 };   // sensor position in ABSOLUTE room frame (§11)
 const polys = {};            // id → [{x,y}] ABSOLUTE-frame vertices for poly zones
 const rects = {};            // id → {x1,y1,x2,y2} SENSOR-frame rect for excl zones
-const presenceStyles = new Array(8).fill(OCCUPANCY_ZONE_STYLE.DEFAULT); // semantic style per Occupancy Zone
+const presenceStyles = new Array(12).fill(OCCUPANCY_ZONE_STYLE.DEFAULT); // semantic style per Occupancy Zone
 let activeId = 'master';
 let mode = 'pan';   // Pan is the safe default — no inadvertent drawing on first click.
 let draft = [];              // vertices being drawn (poly) or [corner] (rect)
@@ -412,17 +422,6 @@ let sensorAiming = false;    // dragging the boresight handle in 'sensor' mode (
 // or mounting data.
 let alignTarget = null;      // {x,y} | null
 let alignPlacing = false;    // dragging the dot in 'align' mode
-
-// --- Device read state (A1/A2) -------------------------------------------------
-let deviceReports = {};       // merged JSON from device state topic during a Read
-let loadedZoneStates = null;  // zoneStates returned by the last layoutFromReports
-let deviceBaseline = null;    // deep snapshot of polys at read time (badge dirty-detect)
-let deviceBaselineStyles = null; // style snapshot at read time, parallel to presenceStyles
-let deviceBaselineLayout = null; // the read-back layout (wire frame) — A3 provision baseline
-// C1: set by the provision handler so the following re-read can diff against the write.
-let pendingConfirm = null;    // { plan, writtenLayout } | null
-// D3: set by the delete handler so the following re-read can confirm the zone is EMPTY.
-let pendingDelete = null;     // { zoneId } | null
 
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
@@ -445,8 +444,8 @@ function fitView() {
 function w2s(p) { return worldToScreen(vp, p); }
 
 // §11: sensor/room-frame point <-> ABSOLUTE room coords (placement = translation).
-function sensorToAbs(p) { const r = sensorToRoom(p, mount); return { x: r.x + sensor.x, y: r.y + sensor.y }; }
-function absToSensor(p) { return roomToSensor({ x: p.x - sensor.x, y: p.y - sensor.y }, mount); }
+function sensorToAbs(p) { const r = sensorToRoom(p, {...mount, heightMm: 0}); return { x: r.x + sensor.x, y: r.y + sensor.y }; }
+function absToSensor(p) { return roomToSensor({ x: p.x - sensor.x, y: p.y - sensor.y }, {...mount, heightMm: 0}); }
 
 /** The 4 ABSOLUTE-frame corners of a sensor-frame rect (sensor placement applied). */
 function rectRoomCorners(r) {
@@ -458,21 +457,19 @@ function rectRoomCorners(r) {
 
 function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
+  syncZoneButtons();
   drawGrid();
   drawEnvelope();
   drawSensor();
   for (const z of ZONES) drawZone(z);
   drawDraft();
-  drawLiveTargets();
   drawRestartLive();
   drawAlignTarget();
   drawAxisLegend();
   refreshStatus();
   alignUpdate();
   updateHint();
-  updateZoneBadges();
   updateFinishButton();
-  updateDeleteButton();
 }
 
 function drawGrid() {
@@ -526,48 +523,78 @@ function drawAxisLegend() {
   ctx.restore();
 }
 
-// Live targets stream in post-mount room frame WITH the sensor offset already
-// applied by the device (mount_angle_apply), so they are already in the same
-// ABSOLUTE frame the canvas draws in — plot them as-is. Adding sensor.x/y here
-// would double-count the offset; that was the case until 2026-08-08, when the
-// device had no offset of its own and the tool supplied the whole translation.
-// Cyan dots; the empty-slot sentinel arrives as null.
-let liveTargets = [];
-
-// liveTargets is the converter-decoded `targets` array from the device state
-// topic: 3 slots of { x, y } mm in the post-mount room frame, empty slots null.
-function drawLiveTargets() {
-  // A target outside the master zone cannot be a person (RLD3-029). On
-  // 2026-08-06 one was drawn as an ordinary dot while being OUTSIDE THE
-  // BUILDING, on the second floor; the operator caught it by eye and nothing in
-  // the interface said a word. Flagged, never hidden: an implausible target is
-  // the most diagnostic thing on this canvas, and suppressing it would remove
-  // the evidence that found the defect.
-  const master = polys.master;
-  for (const t of liveTargets) {
-    if (!t) continue;
-    const abs = { x: t.x, y: t.y };   // already absolute — see the note above
-    const s = w2s(abs);
-    const bad = isTargetOutsideRoom(abs, master);
-    ctx.beginPath(); ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);
-    ctx.fillStyle = bad ? '#f87171' : '#22d3ee'; ctx.fill();
-    ctx.lineWidth = 1.5; ctx.strokeStyle = bad ? '#b91c1c' : '#0e7490'; ctx.stroke();
-    if (!bad) continue;
-    // Dashed halo + label, so it reads as "this cannot be real" at a glance
-    // rather than as one dot among several identical ones.
-    ctx.beginPath(); ctx.arc(s.sx, s.sy, 13, 0, Math.PI * 2);
-    ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
-    ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = '#f87171';
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText('outside room', s.sx + 16, s.sy + 4);
-  }
-}
-
 // --- Restart live layer (contract §3) ------------------------------------------
 // One decoded live_frame at a time; each slot is drawn by its classification,
 // never as a bare point. A frozen return (the LD2450's 400-frame hold) is the
 // one the baseline drew as a person; here it gets its own glyph and count.
+let restartDoors = [];
+let doorDraft=[],doorDrag=null,redrawDoor=null;
+const doorMessage=document.getElementById('doorMessage');
+function addDoor(door) {
+  if(redrawDoor==null && recordsLeft()<=0)throw new Error('No spatial records left');
+  const previous=redrawDoor==null?null:restartDoors[redrawDoor];
+  door={...previous,...door,spatialId:previous?.spatialId ?? nextSpatialId(spatialElements())};
+  door.name=previous?.name || defaultName('door',door.spatialId);
+  const candidate=restartDoors.slice();if(previous)candidate[redrawDoor]=door;else candidate.push(door);
+  assertDoorsDisjoint(polys.master,candidate);
+  restartDoors=candidate;activeId='door'+(previous?redrawDoor:candidate.length-1);redrawDoor=null;
+  doorMessage.textContent='';mode='edit';doorDraft=[];draw();if(!previous)renameElement();
+}
+document.getElementById('doorAdd').onclick=()=>{
+ try{const wall=document.getElementById('doorWall').value.trim().toUpperCase().charCodeAt(0)-65;
+ addDoor(wallDoor(polys.master,wall,Number(document.getElementById('doorStart').value),Number(document.getElementById('doorEnd').value),100));
+ }catch(e){doorMessage.textContent=e.message;}
+};
+document.getElementById('doorDraw').onclick=()=>{redrawDoor=null;doorDraft=[];setMode('door');};
+document.getElementById('doorRedraw').onclick=()=>{if(activeId.startsWith('door')){redrawDoor=Number(activeId.slice(4));doorDraft=[];setMode('door');}};
+function deleteSelectedDoor(){if(!activeId.startsWith('door'))return;restartDoors.splice(Number(activeId.slice(4)),1);activeId='master';draw();}
+document.getElementById('doorDelete').onclick=deleteSelectedDoor;
+document.getElementById('doorTolerance').onchange=e=>{
+ if(!activeId.startsWith('door'))return;
+ const i=Number(activeId.slice(4)),d={...restartDoors[i],toleranceMm:Number(e.target.value)},candidate=restartDoors.slice();candidate[i]=d;
+ try{assertDoorsDisjoint(polys.master,candidate);restartDoors=candidate;doorMessage.textContent='';}
+ catch(error){doorMessage.textContent=error.message;}draw();
+};
+function doorPointerDown(wp) {
+ if(mode==='door'){
+  const projected=projectWall(polys.master,wp,pxToWorld(vp,12));
+  if(!projected){doorMessage.textContent='Click on a finite room wall';return true;}
+  if(!doorDraft.length){doorDraft=[projected.point];draw();return true;}
+  try{addDoor(doorFromPoints(polys.master,doorDraft[0],wp,100,pxToWorld(vp,12)));}
+  catch(e){doorMessage.textContent=e.message;doorDraft=[];draw();}return true;
+ }
+ if(mode!=='edit')return false;
+ const candidates=restartDoors.map((d,i)=>({d,i})).filter(({d})=>distToSegment(d.vertices[0],d.vertices[1],wp)<=pxToWorld(vp,10));
+ if(candidates.length){const {d,i}=candidates[0];selectElement('door'+i);
+  const {wall}=doorInterval(polys.master,d),projection=projectWall(polys.master,wp,pxToWorld(vp,12),wall);
+  if(!projection)return true;
+  const ends=d.vertices.map((point,n)=>({point,n})).sort((a,b)=>{
+   const wallStart=polys.master[wall];return Math.hypot(a.point.x-wallStart.x,a.point.y-wallStart.y)-Math.hypot(b.point.x-wallStart.x,b.point.y-wallStart.y);});
+  const endpoint=ends.findIndex(e=>Math.hypot(e.point.x-wp.x,e.point.y-wp.y)<=pxToWorld(vp,8));
+  doorDrag={i,original:structuredClone(d),wall,start:projection.along,end:endpoint<0?null:endpoint};return true;
+ }
+ return false;
+}
+function drawDoors(){
+ drawWallGuides(ctx,polys.master,w2s);
+ restartDoors.forEach((door,i)=>{
+  const a=w2s(door.vertices[0]),b=w2s(door.vertices[1]),selected=activeId==='door'+i;
+  ctx.save();ctx.setLineDash([]);
+  if(selected){ctx.lineWidth=10;ctx.strokeStyle='#fff';ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();}
+  ctx.strokeStyle=PALETTE.door;ctx.fillStyle=PALETTE.door;ctx.lineWidth=5;
+  ctx.beginPath();ctx.moveTo(a.sx,a.sy);ctx.lineTo(b.sx,b.sy);ctx.stroke();
+  try{const normal=doorNormal(polys.master,door),mx=(a.sx+b.sx)/2,my=(a.sy+b.sy)/2;
+   const nx=normal.x,ny=-normal.y,tx=mx+nx*23,ty=my+ny*23;
+   ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(mx,my);ctx.lineTo(tx,ty);
+   ctx.lineTo(tx-nx*7-ny*5,ty-ny*7+nx*5);ctx.moveTo(tx,ty);ctx.lineTo(tx-nx*7+ny*5,ty-ny*7-nx*5);ctx.stroke();
+   if(selected){const interval=doorInterval(polys.master,door),tolerance=wallDoor(polys.master,interval.wall,interval.lowMm,interval.highMm,0);
+    ctx.setLineDash([3,3]);ctx.lineWidth=1;for(const sign of [-1,1]){const points=tolerance.vertices.map(p=>w2s({x:p.x+normal.x*door.toleranceMm*sign,y:p.y+normal.y*door.toleranceMm*sign}));ctx.beginPath();ctx.moveTo(points[0].sx,points[0].sy);ctx.lineTo(points[1].sx,points[1].sy);ctx.stroke();}drawHandles(door.vertices,PALETTE.door);}
+  }catch(e){doorMessage.textContent=`${door.name}: ${e.message}; resolve before writing`;}
+  ctx.fillText(door.name || 'Door',a.sx+8,a.sy-8);ctx.restore();
+ });
+ if(doorDraft.length){const a=w2s(doorDraft[0]);ctx.fillStyle=PALETTE.door;ctx.beginPath();ctx.arc(a.sx,a.sy,5,0,Math.PI*2);ctx.fill();}
+}
+
 let rsFrame = null;
 let rsRetired = null;   // { x, y, token, reason, until } - last retirement marker
 const RS_STYLE = {
@@ -580,21 +607,44 @@ const RS_STYLE = {
   frozen:    { fill: '#fb923c', stroke: '#c2410c', dash: [] },
 };
 function drawRestartLive() {
+  drawDoors();
   if (!rsFrame || !Array.isArray(rsFrame.slots)) return;
-  const threshold = Number(document.getElementById('rsFrozen').value) || 50;
+  const threshold = FROZEN_FRAMES;
   ctx.font = '11px system-ui, sans-serif';
   rsFrame.slots.forEach((slot, i) => {
     const kind = classifySlot(slot, { frozenThresholdFrames: threshold });
-    if (kind === 'absent' || slot.x_mm == null) return;
-    const s = w2s({ x: slot.x_mm, y: slot.y_mm });
+    const point = displayPoint(slot);
+    if (kind === 'absent' || !point) return;
+    const s = w2s(point);
+    if (document.getElementById('rsRawMarker').checked && Number.isFinite(slot.x_mm) && Number.isFinite(slot.y_mm)) {
+      const raw = w2s({x: slot.x_mm, y: slot.y_mm});
+      ctx.save(); ctx.globalAlpha = 0.4; ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1;
+      ctx.setLineDash([]); ctx.beginPath();
+      ctx.moveTo(raw.sx - 3, raw.sy); ctx.lineTo(raw.sx + 3, raw.sy);
+      ctx.moveTo(raw.sx, raw.sy - 3); ctx.lineTo(raw.sx, raw.sy + 3);
+      ctx.stroke(); ctx.restore();
+    }
     const st = RS_STYLE[kind];
     ctx.setLineDash(st.dash); ctx.lineWidth = 1.5; ctx.strokeStyle = st.stroke;
     ctx.beginPath();
     if (kind === 'frozen') ctx.rect(s.sx - 6, s.sy - 6, 12, 12); else ctx.arc(s.sx, s.sy, 6, 0, Math.PI * 2);
     if (st.fill) { ctx.fillStyle = st.fill; ctx.fill(); }
     ctx.stroke(); ctx.setLineDash([]);
-    let label = `${i}`;
-    if (slot.track_present) label += ` t${slot.track_token}`;
+    const status = trackStatus(slot);
+    if (status) {
+      ctx.strokeStyle = status === 'ghost' ? '#e879f9' : status === 'suspect' ? '#fbbf24' : '#22d3ee';
+      ctx.beginPath();
+      if (status === 'suspect') {
+        ctx.moveTo(s.sx, s.sy - 11); ctx.lineTo(s.sx + 10, s.sy + 8); ctx.lineTo(s.sx - 10, s.sy + 8); ctx.closePath();
+      } else if (status === 'ghost') {
+        ctx.moveTo(s.sx, s.sy - 11); ctx.lineTo(s.sx + 11, s.sy); ctx.lineTo(s.sx, s.sy + 11);
+        ctx.lineTo(s.sx - 11, s.sy); ctx.closePath();
+      } else ctx.arc(s.sx, s.sy, 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    let label = `Target ${i+1}`;
+    if (slot.track_present) label += ` track token ${slot.track_token}`;
+    if (status) label += ` ${status}`;
     if (kind === 'frozen') label += ` frozen ${slot.unchanged_frames}`;
     else if (kind === 'rejected') label += ` ${slot.spatial_reason}`;
     else if (kind === 'ghost') label += ` ghost ${slot.ghost_reason}`;
@@ -608,6 +658,7 @@ function drawRestartLive() {
     ctx.fillStyle = '#fbbf24'; ctx.fillText(`retired t${rsRetired.token} ${rsRetired.reason}`, s.sx + 15, s.sy - 8);
   }
 }
+document.getElementById('rsRawMarker').onchange = () => draw();
 
 // Fuchsia, distinct from every zone/target/mode-highlight color already in use.
 const ALIGN_COLOR = '#e879f9';
@@ -633,7 +684,7 @@ function drawAlignTarget() {
   const from = { x: sensor.x, y: sensor.y };
   drawRay(from, alignTarget, ALIGN_COLOR);
 
-  const onlyTarget = liveTargets.filter(Boolean);
+  const onlyTarget = (rsFrame?.slots || []).filter(s => s.valid && s.x_mm != null && s.y_mm != null).map(s => ({x: s.x_mm, y: s.y_mm}));
   if (onlyTarget.length === 1) {
     const t = onlyTarget[0];
     // Targets already carry the device's sensor offset (mount_angle_apply), so
@@ -714,20 +765,22 @@ function aimSensorAt(wp) {
 }
 
 function drawZone(z) {
-  const isActive = z.id === activeId;
-  if (z.kind === 'poly') {
-    const pts = polys[z.id];
-    if (!pts || pts.length === 0) return;
-    drawPoly(pts, z.color, isActive, true);
-    if (isActive && mode === 'edit') { drawHandles(pts, z.color); drawEdgeLengths(pts); }
-  } else {
-    const r = rects[z.id]; // stored in SENSOR frame
-    if (!r) return;
-    // Sensor-frame axis-aligned rect → room-frame quad (rotates/flips with mount).
-    const corners = rectRoomCorners(r);
-    drawPoly(corners, z.color, isActive, true, true);
-    if (isActive && mode === 'edit') { drawHandles(corners, z.color); drawEdgeLengths(corners); }
-  }
+ const info=elementInfo(z.id),active=z.id===activeId;
+ const pts=z.kind==='poly'?polys[z.id]:rects[z.id]?rectRoomCorners(rects[z.id]):null;
+ if(!pts?.length)return;
+ if(active){ctx.save();ctx.strokeStyle='#fff';ctx.lineWidth=5;ctx.beginPath();pts.forEach((p,i)=>{const q=w2s(p);i?ctx.lineTo(q.sx,q.sy):ctx.moveTo(q.sx,q.sy);});ctx.closePath();ctx.stroke();ctx.restore();}
+ drawPoly(pts,PALETTE[info.kind],active,true,info.kind==='mask');
+ if(info.kind==='tz' || info.kind==='iz'){
+  ctx.save();ctx.beginPath();pts.forEach((p,i)=>{const q=w2s(p);i?ctx.lineTo(q.sx,q.sy):ctx.moveTo(q.sx,q.sy);});ctx.closePath();ctx.clip();
+  ctx.strokeStyle=PALETTE[info.kind];ctx.lineWidth=1;ctx.globalAlpha=0.55;
+  const screen=pts.map(w2s),xs=screen.map(p=>p.sx),ys=screen.map(p=>p.sy),left=Math.min(...xs),right=Math.max(...xs),top=Math.min(...ys),bottom=Math.max(...ys),height=bottom-top;
+  for(let x=left-height;x<=right+height;x+=12){ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x+height,bottom);ctx.stroke();
+   if(info.kind==='iz'){ctx.beginPath();ctx.moveTo(x,bottom);ctx.lineTo(x+height,top);ctx.stroke();}}
+  ctx.restore();
+ }
+ const at=w2s(pts[0]);ctx.fillStyle=PALETTE[info.kind];ctx.font='12px system-ui, sans-serif';
+ ctx.fillText(info.name+(info.kind==='zone'?` · ${info.style}`:info.kind==='tz'?' · TZ':info.kind==='iz'?' · IZ':info.kind==='mask'?' · sensor mask':''),at.sx+8,at.sy-10);
+ if(active && mode==='edit'){drawHandles(pts,PALETTE[info.kind]);drawEdgeLengths(pts);}
 }
 
 /*
@@ -803,8 +856,7 @@ function drawPoly(pts, color, active, closed, dashed = false) {
   if (closed) ctx.closePath();
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle = color + (active ? '22' : '12');
-  ctx.fill();
+  if(color!==PALETTE.room){ctx.fillStyle = color + (color===PALETTE.mask?'55':active?'22':'12');ctx.fill();}
 }
 
 function drawHandles(pts, color) {
@@ -817,6 +869,7 @@ function drawHandles(pts, color) {
 }
 
 function drawDraft() {
+  if(activeId.startsWith('door'))return;
   if (draft.length === 0) return;
   const z = zoneById[activeId];
   if (z.kind === 'poly') {
@@ -928,7 +981,16 @@ cv.addEventListener('pointerdown', (e) => {
     alignTarget = { x: Math.round(wp.x), y: Math.round(wp.y) };
     alignPlacing = true; dragging = true; draw(); return;
   }
+  if(doorPointerDown(wp))return;
+  if(mode==='edit'){
+   const hits=ZONES.filter(z=>{const pts=z.kind==='poly'?polys[z.id]:rects[z.id]?rectRoomCorners(rects[z.id]):null;
+    return pts && (pointInPoly(pts,wp) || nearestEdge(pts,wp,pxToWorld(vp,8))>=0);});
+   if(hits.length && (e.altKey || !hits.some(z=>z.id===activeId) || activeId==='master' && hits.some(z=>z.id.startsWith('pres')))){
+    const current=hits.findIndex(z=>z.id===activeId);selectElement(hits[(current+1)%hits.length].id);
+   }
+  }
   const z = zoneById[activeId];
+  if(!z || z.kind==='door')return;
 
   if (mode === 'draw') {
     if (z.kind === 'poly') {
@@ -947,8 +1009,8 @@ cv.addEventListener('pointerdown', (e) => {
       if (draft.length === 0) { draft.push(wp); gestureUndo = () => { draft.length = 0; }; }
       else {
         const a = absToSensor(draft[0]), b = absToSensor(wp);
-        rects[z.id] = norm(round(a), round(b));
-        draft = []; draw();
+        const fresh=!rects[z.id];rects[z.id] = norm(round(a), round(b));
+        draft = [];if(fresh)renameElement(z.id);draw();
       }
     }
     return;
@@ -1002,6 +1064,13 @@ cv.addEventListener('pointermove', (e) => {
     vp = pan(vp, e.clientX - panLast.x, e.clientY - panLast.y);
     panLast = { x: e.clientX, y: e.clientY }; draw(); return;
   }
+  if(doorDrag){
+   const hit=projectWall(polys.master,evWorld(e),Infinity,doorDrag.wall);
+   if(!hit){doorMessage.textContent='Door stays on its wall';return;}
+   try{const candidate=restartDoors.slice();candidate[doorDrag.i]=moveDoor(polys.master,doorDrag.original,hit.along-doorDrag.start,doorDrag.end);
+    assertDoorsDisjoint(polys.master,candidate);restartDoors=candidate;doorMessage.textContent='';draw();}
+   catch(error){doorMessage.textContent=error.message;}return;
+  }
   if (!dragging) return;
   gestureUndo = null;        // a real drag — the initial commit was intended
   if (sensorAiming) { aimSensorAt(evWorld(e)); draw(); return; }
@@ -1049,6 +1118,7 @@ cv.addEventListener('pointermove', (e) => {
   }
 });
 function endPointer(e) {
+  doorDrag=null;
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) pinch = null;
   if (activePointers.size > 0) return;   // other fingers still down
@@ -1083,7 +1153,7 @@ cv.addEventListener('dblclick', () => { if (mode === 'draw') finishDraft(); });
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'Enter') finishDraft();
-  else if (e.key === 'Escape') { draft = []; draw(); }
+  else if (e.key === 'Escape') {draft=[];doorDraft=[];redrawDoor=null;doorDrag=null;setMode('edit');}
   else if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'edit' && selVert >= 0) {
     const p = polys[activeId];
     if (p && p.length > 3) { p.splice(selVert, 1); selVert = -1; draw(); }
@@ -1141,9 +1211,13 @@ function applyVertexDrag(locked) {
 }
 
 function finishDraft() {
-  const z = zoneById[activeId];
-  if (z.kind === 'poly' && draft.length >= 3) { polys[z.id] = draft.slice(); }
-  draft = []; draw();
+ const z=zoneById[activeId];if(z.kind==='poly' && draft.length>=3) {
+  const fresh=!polys[z.id],n=activePresenceIndex();
+  if(fresh && n>=0 && recordsLeft()<=0){document.getElementById('nameMessage').textContent='No spatial records left';return;}
+  if(fresh && n>=0){slotIds[n]=nextSpatialId(spatialElements());slotNames[n]=defaultName(kindOf(slotPolicies[n] ?? (presenceStyles[n]==='transit_only'?1:0)),slotIds[n]);}
+  polys[z.id]=draft.slice();draft=[];if(fresh)renameElement(z.id);
+ }
+ draft=[];draw();
 }
 function updateFinishButton() {
   document.getElementById('finish').disabled = !(mode === 'draw' && draft.length > 0);
@@ -1151,9 +1225,7 @@ function updateFinishButton() {
 // Phase D: only meaningful for a zone the device actually reports as LOADED —
 // nothing to delete from an EMPTY/UNKNOWN/INVALID zone (and no connection means
 // no state to check at all).
-function updateDeleteButton() {
-  document.getElementById('deleteZone').disabled = (stateForZoneId(activeId) !== ZONE_STATE.LOADED);
-}
+
 function norm(a, b) {
   return { x1: Math.min(a.x, b.x), y1: Math.min(a.y, b.y), x2: Math.max(a.x, b.x), y2: Math.max(a.y, b.y) };
 }
@@ -1164,18 +1236,12 @@ function norm(a, b) {
  * refresh — i.e. on every edit — because the failure it prevents is completely
  * silent once provisioned: correct tracking, no error, and a count that never
  * moves. */
-function refreshPv11() {
-  const el = document.getElementById('pv11');
-  if (!el) return;
-  let warns = [];
-  try { warns = layoutWarnings(appToLayout()); } catch { warns = []; }
-  el.textContent = warns.length ? warns.map((w) => '⚠ ' + w).join('\n') : '';
-}
 
 function refreshStatus() {
-  refreshPv11();
   const z = zoneById[activeId];
   const s = document.getElementById('status');
+  if(!z)return;
+  if(z.kind==='door'){const d=restartDoors[Number(activeId.slice(4))];s.textContent=`${d.name}: spatial ID ${d.spatialId}`;return;}
   if (z.kind === 'poly') {
     const pts = polys[z.id];
     if (!pts) { s.textContent = `${z.label}: empty`; s.className = ''; return; }
@@ -1206,127 +1272,22 @@ function wrapDeg(d) { return ((d + 180) % 360 + 360) % 360 - 180; }
 
 let alignErrorDeg = null;          // stashed by alignUpdate() for panUpdateAlignError()
 
-function alignUpdate() {
-  const box = document.getElementById('alignStatus');
-  if (!box) { panUpdateAlignError(); return; }   // called before DOM ready during early draw()s
-
-  if (!alignTarget) {
-    box.textContent = 'yaw angle: place "You Are Here", then stand where the sensor can see you';
-    alignErrorDeg = null; panUpdateAlignError(); return;
-  }
-
-  const rel = { x: alignTarget.x - sensor.x, y: alignTarget.y - sensor.y };
-  const betaStated = Math.atan2(rel.y, rel.x) * 180 / Math.PI;
-  // Show the dot's room coordinates, not just bearings: at a working zoom one
-  // pixel is several mm, so eyeballing the dot cannot confirm placement — and a
-  // bumped dot was invisible. These numbers are how you check it landed.
-  const dotLine = `dot ${alignTarget.x}, ${alignTarget.y} mm (room)\n`;
-
-  if (!liveOn) {
-    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\nturn on Live view to compare against the detected target`;
-    alignErrorDeg = null; panUpdateAlignError(); return;
-  }
-  const present = liveTargets.filter(Boolean);
-  if (present.length === 0) {
-    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\nno target detected — stand where the sensor can see you`;
-    alignErrorDeg = null; panUpdateAlignError(); return;
-  }
-  if (present.length > 1) {
-    box.textContent = dotLine + `stated ${betaStated.toFixed(1)}°\n${present.length} targets detected — only one person should be in view`;
-    alignErrorDeg = null; panUpdateAlignError(); return;
-  }
-
-  const t = present[0];
-  /* Both bearings must be measured FROM THE SENSOR, or the comparison is
-   * meaningless. betaStated already subtracts the sensor position (rel, above);
-   * this one did not — it took atan2 of the raw target, which was correct only
-   * while the device reported sensor-relative coordinates. Since the sensor
-   * offset landed (2026-08-08) targets arrive ABSOLUTE, so that computed the
-   * bearing from the ROOM ORIGIN and silently biased the yaw error by the
-   * offset. Small at a 50 mm offset, large at a room-corner one. */
-  const betaDisplayed = Math.atan2(t.y - sensor.y, t.x - sensor.x) * 180 / Math.PI;
-  const errorDeg = wrapDeg(betaStated - betaDisplayed);
-  box.textContent = dotLine +
-    `stated ${betaStated.toFixed(1)}° · detected ${betaDisplayed.toFixed(1)}°\n` +
-    `off by ${errorDeg >= 0 ? '+' : ''}${errorDeg.toFixed(1)}° — rotate the head (Step 1) to close it`;
-  alignErrorDeg = errorDeg;
-  panUpdateAlignError();
-}
-
-/* Pan-align bearing error → jog. Reuses alignUpdate()'s errorDeg (same "You Are
- * Here" vs detected-target bearing gap the Step 2 check reports) but
- * converts it to a PHYSICAL pan jog instead of a software yaw edit.
- *
- * Sign: MEASURED ON HARDWARE, not derived. Bench run 2026-07-27
- * (rld3-bench/2026-07-27_005635_dc3_run4_keyboard) commanded pan_jog +114
- * half-steps (nominally +10 deg "CW") and the target's sensor-frame bearing
- * DECREASED by 11.7 deg; the reciprocal -114 jog moved it +13.7 deg. So a
- * POSITIVE jog REDUCES the bearing, and the jog that closes the error is
- *     Δφ = −errorDeg.
- * An earlier revision derived +errorDeg from the yaw convention in
- * geometry.js and was WRONG on hardware — the derivation assumed a mapping
- * between pan_jog's "+ = CW" label and the sensor-frame bearing sign that the
- * physical assembly does not honour. Trust the measurement. If the sensor is
- * ever remounted, re-geared, or the inverted flag changes, RE-MEASURE rather
- * than re-derive: a flipped sign here doubles the error instead of closing it.
- *
- * Magnitude caveat: 10 deg commanded produced ~11.7 deg measured. That is
- * within the bearing noise of a breathing human at ~2 m (137 mm of wander at
- * 2100 mm ≈ 3.7 deg), so it is NOT established as a real scale error — but
- * expect a press to land approximately, and iterate.
- *
- * BACKLASH — why this button is coarse-only and warns on reversal:
- * 28BYJ-48 gear backlash is 2.5-8 deg, unit-variable, and grows with wear. It
- * has NOT been measured on this assembly, and it cannot be measured against a
- * human target: the bearing noise above (~3.7 deg) is the same order as the
- * backlash itself. The standing strategy (RLD3Target-auto-align.md) is
- * therefore MONOTONIC APPROACH — only ever move one direction per alignment,
- * so slack is taken up once and never reopens, and its value never needs to be
- * known. A button that always jogs "whichever way closes the error" breaks
- * that the moment noise flips the sign, so it tracks the last direction and
- * says so rather than silently eating slack.
- *
- * NOTE — this inverts auto-align.md §11's division of labour (2026-07-29). There,
- * the motor coarse-centred and software owned the exact angle. Yaw is now the
- * operator's INTENT, aimed with the optimal-FOV cone, so no software correction
- * is applied on top: closing the residual is the MOTOR's job, via Fine jog. That
- * makes backlash and step-loss matter more than §11 assumed — they are no longer
- * absorbed by a computed angle. */
+function alignUpdate() { restartAlignUpdate(); }
+// Motor sign follows the retained measured convention in commissioning.js.
 let panLastJogDir = 0;          // +1 CW, -1 CCW, 0 = none yet this session
 
 function panUpdateAlignError() {
-  const box = document.getElementById('panErrStatus');
-  const btn = document.getElementById('panApplyErr');
-  if (!box || !btn) return;   // called before DOM ready during early draw()s
-
-  if (alignErrorDeg == null) {
-    box.textContent = 'motor jog: place "You Are Here" and stand where the sensor can see you';
-    btn.disabled = true; btn.textContent = 'Coarse jog to centre';
-    return;
-  }
-  const jogDeg = -alignErrorDeg;           // measured on hardware — see above
-  const dir = jogDeg >= 0 ? 'CW' : 'CCW';
-  const thisDir = jogDeg >= 0 ? 1 : -1;
-  const withinCoarseCap = Math.abs(jogDeg) <= 45;
-  const reversing = panLastJogDir !== 0 && thisDir !== panLastJogDir;
-
-  let note;
-  if (!withinCoarseCap) note = ' — exceeds the 45° single-jog cap, jog manually in steps';
-  else if (reversing)   note = '\n⚠ reverses the last jog — gear slack (2.5–8°, unmeasured) is taken\n  up first, so the start of this move may produce no rotation';
-  else                  note = ' (fits one coarse jog)';
-
-  box.textContent =
-    `error ${alignErrorDeg >= 0 ? '+' : ''}${alignErrorDeg.toFixed(1)}°\n` +
-    `rotate ${Math.abs(jogDeg).toFixed(1)}° ${dir}` + note;
-  btn.disabled = !withinCoarseCap;
-  btn.textContent = withinCoarseCap
-    ? `Rotate ${Math.abs(jogDeg).toFixed(1)}° ${dir}` : 'Coarse jog to centre';
+  const box = document.getElementById('panErrStatus'), btn = document.getElementById('panApplyErr');
+  if (alignErrorDeg == null) { box.textContent = 'Read back the layout, enable Live view, place You Are Here and stand alone in view.'; btn.disabled = true; return; }
+  const jog = alignmentJog(alignErrorDeg);
+  box.textContent = `turn the sensor ${Math.abs(jog.degrees).toFixed(1)}° ${jog.direction}` + (jog.withinCap ? '' : ' — exceeds the single-jog cap, jog in steps');
+  btn.disabled = !jog.withinCap || Math.abs(jog.steps) < 1;
+  btn.textContent = 'Jog to align';
 }
-
 function updateHint() {
   const isRect = zoneById[activeId].kind === 'rect';
   let h;
-  if (mode === 'draw') {
+  if(mode==='door'){h='Door: click two points on one wall. Escape cancels.';} else if (mode === 'draw') {
     h = isRect ? 'Draw: click two opposite corners to place the exclusion rectangle. Wheel=zoom.'
                : 'Draw: click to add vertices; click the first point / Enter to close. Wheel=zoom.';
   } else if (mode === 'edit') {
@@ -1344,45 +1305,61 @@ function updateHint() {
 
 // --- Layout <-> app state ------------------------------------------------------
 function appToLayout() {
+  if (Object.keys(polys).some(k => k.startsWith('ez') && polys[k]?.length)) throw new Error('Restart does not support EZ drawings. Remove them explicitly.');
   const L = emptyLayout();
-  // 2026-08-08: mount_offset_x/y_mm makes the device's own room frame
-  // ABSOLUTE (sensor position + rotation), matching what this tool has always
-  // called "ABSOLUTE coords" (§11). sensor.x/y IS that offset now (kept in
-  // sync on every device read/write), so the wire frame and the ABSOLUTE
-  // frame are the same thing and polygons need no translation before they're
-  // sent — see the identity `tr` below. This was previously "wire room frame
-  // is sensor-at-origin, translate by -sensor_position" because the device
-  // had no offset concept at all; that assumption is gone.
+  // Geometry and origin share the absolute room frame.
+  L.doors=JSON.parse(JSON.stringify(restartDoors));
   L.mount = { ...mount, offsetXMm: sensor.x, offsetYMm: sensor.y };
   const tr = (verts) => verts.map((v) => ({ x: v.x, y: v.y }));
-  L.master = polys.master ? { vertices: tr(polys.master) } : null;
-  for (let n = 0; n < 8; n++) L.presence[n] = polys['pres' + n]
-    ? { vertices: tr(polys['pres' + n]), style: presenceStyles[n] } : null;
-  for (let p = 0; p < 2; p++) {
-    const inn = polys[`ez${p}_in`], out = polys[`ez${p}_out`];
-    L.entryExit[p] = (inn || out) ? { inner: inn ? { vertices: tr(inn) } : null, outer: out ? { vertices: tr(out) } : null } : null;
-  }
+  L.master = polys.master ? { name:roomName, vertices: tr(polys.master) } : null;
+  L.mount.sensorHeightMm = sensorHeightMm; L.mount.scattererHeightMm = scattererHeightMm;
+  L.restartMetadata = restartMetadata;
+  for(let n=0;n<12;n++) L.presence[n]=polys['pres'+n] ? {vertices:tr(polys['pres'+n]),
+    ...slotDetails[n],style:presenceStyles[n],styleCode:slotStyleCodes[n] ?? undefined,
+    name:slotNames[n] || defaultName(kindOf(slotPolicies[n] ?? 0),slotIds[n] ?? n+1),
+    policy:slotPolicies[n] ?? (presenceStyles[n]==='transit_only'?1:0), spatialId:slotIds[n] ?? undefined} : null;
   for (let n = 0; n < 3; n++) L.exclusions[n] = rects['excl' + n] ? { ...rects['excl' + n] } : null;
   return L;
 }
 
 // --- UI wiring -----------------------------------------------------------------
 const zonesEl = document.getElementById('zones');
-let curCat = null, catEl = null;
-ZONES.forEach((z) => {
-  if (z.cat !== curCat) {                 // new category → new group (spaced by CSS gap)
-    curCat = z.cat;
-    catEl = document.createElement('div');
-    catEl.className = 'zone-cat';
-    zonesEl.appendChild(catEl);
-  }
-  const b = document.createElement('button');
-  b.innerHTML = `<span class="swatch" style="background:${z.color}"></span>${z.label}<span class="state-dot" data-zone="${z.id}"></span>`;
-  b.onclick = () => { activeId = z.id; draft = []; selVert = -1; syncZoneButtons(); syncZoneStyleControl(); draw(); };
-  b.dataset.zone = z.id; catEl.appendChild(b);
-});
+function elementInfo(id) {
+  if(id==='master') return {name:roomName,kind:'room',exists:!!polys.master};
+  if(id.startsWith('door')) {const d=restartDoors[Number(id.slice(4))];return {name:d?.name || 'Door',kind:'door',exists:!!d};}
+  if(id.startsWith('excl')) {const n=Number(id.slice(4));return {name:maskNames[n],kind:'mask',exists:!!rects[id]};}
+  const n=Number(id.slice(4)),kind=kindOf(slotPolicies[n] ?? (presenceStyles[n]==='transit_only'?1:0));
+  return {name:slotNames[n] || defaultName(kind,slotIds[n] ?? n+1),kind,exists:!!polys[id],style:presenceStyles[n]};
+}
+function spatialElements() {return [...slotIds.map((id,n)=>polys['pres'+n]?{spatialId:id,name:slotNames[n]}:null),...restartDoors].filter(Boolean);}
+function recordsLeft() {return 12-spatialElements().length;}
+function selectElement(id) {activeId=id;draft=[];selVert=-1;syncZoneStyleControl();draw();}
 function syncZoneButtons() {
-  zonesEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.zone === activeId));
+  for(let n=0;n<12;n++)if(polys['pres'+n] && slotIds[n]==null){slotIds[n]=nextSpatialId(spatialElements());slotNames[n] ||= defaultName(kindOf(slotPolicies[n] ?? 0),slotIds[n]);}
+
+  for(const z of ZONES) {const e=elementInfo(z.id);z.label=e.exists?e.name:(z.id.startsWith('pres')?'+ Zone':e.name);z.color=e.exists?PALETTE[e.kind]:PALETTE.unused;}
+  for(const key of Object.keys(zoneById)) if(key.startsWith('door')) delete zoneById[key];
+  restartDoors.forEach((d,n)=>zoneById['door'+n]={id:'door'+n,label:d.name,color:PALETTE.door,kind:'door'});
+  const entries=[...ZONES,...restartDoors.map((d,n)=>zoneById['door'+n])];
+  const stamp=JSON.stringify(entries.map(z=>[z.id,z.label,z.color,elementInfo(z.id).style]));
+  if(stamp!==zonesEl.dataset.stamp) {
+    zonesEl.innerHTML=''; // actual DOM replacement; fake DOM implements the same clearing.
+    const cat=document.createElement('div');cat.className='zone-cat';zonesEl.appendChild(cat);
+    for(const z of entries) {const b=document.createElement('button'),info=elementInfo(z.id);
+      b.textContent=z.label+(info.exists && info.kind==='zone'?` · ${info.style}`:info.exists?` · ${info.kind}`:'');
+      b.style.borderColor=z.color;b.style.color=z.color;b.dataset.zone=z.id;b.onclick=()=>selectElement(z.id);cat.appendChild(b);}
+    zonesEl.dataset.stamp=stamp;
+  }
+  zonesEl.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.zone===activeId));
+  document.getElementById('recordsLeft').textContent=`${recordsLeft()} records left (zones + doors ≤ 12)`;
+  const door=activeId.startsWith('door')?restartDoors[Number(activeId.slice(4))]:null;
+  document.getElementById('doorToleranceRow').hidden=!door;
+  if(door && document.activeElement!==document.getElementById('doorTolerance')) document.getElementById('doorTolerance').value=door.toleranceMm;
+  document.getElementById('doorDelete').disabled=!door;document.getElementById('doorRedraw').disabled=!door;
+  const n=activePresenceIndex();
+  document.getElementById('spatialIdRow').hidden=!(door || n>=0 && polys[activeId]);
+  document.getElementById('repairId').hidden=document.getElementById('spatialIdRow').hidden;
+  if(document.activeElement!==document.getElementById('spatialId')) document.getElementById('spatialId').value=door?.spatialId ?? slotIds[n] ?? '';
 }
 
 const zoneStyleEl = document.getElementById('zoneStyle');
@@ -1394,96 +1371,40 @@ const STYLE_NOTE = {
   chair: 'Known sitting location; occupancy and traversal allowed.',
   couch: 'Known sitting/lying location; occupancy and traversal allowed.',
   table: 'Somewhere people sit still for a long time; start, occupancy and traversal all allowed.',
-  transit_only: 'Nothing may START here; walking through is normal and still reported. ' +
-    'Best for places a person cannot be — inside a wall, over a stairwell, out a window. ' +
-    '⚠ If you aim one at reflections it WILL go stale: measured phantom locations ' +
-    'shared zero cells between 2026-08-18 and 2026-08-22.',
+  transit_only: 'TZ: an established track may pass; no track may start here.',
 };
 function activePresenceIndex() {
   return activeId.startsWith('pres') ? parseInt(activeId.slice(4), 10) : -1;
 }
 function syncZoneStyleControl() {
-  const n = activePresenceIndex();
-  const show = n >= 0 && n < presenceStyles.length;
-  zoneStyleRow.style.display = show ? '' : 'none';
-  zoneStyleNote.style.display = show ? '' : 'none';
-  if (!show) return;
-  zoneStyleEl.value = presenceStyles[n];
-  zoneStyleNote.textContent = STYLE_NOTE[presenceStyles[n]] ?? '';
+  const n=activePresenceIndex(),show=n>=0;
+  zoneStyleRow.style.display=show?'':'none';zoneStyleNote.style.display=show?'':'none';
+  if(!show) return;
+  const choice=choiceFor(slotPolicies[n] ?? (presenceStyles[n]==='transit_only'?1:0),presenceStyles[n]);
+  document.getElementById('unsupportedStyle').hidden=choice!=='unsupported';zoneStyleEl.value=choice;
+  zoneStyleNote.textContent=choice==='unsupported'?`Imported policy ${slotPolicies[n]}, style ${presenceStyles[n]}: preserved until you choose.`:(choice==='impossible'?'IZ: returns retained as evidence; no tracking support.':STYLE_NOTE[choice] || '');
 }
-zoneStyleEl.onchange = () => {
-  const n = activePresenceIndex();
-  if (n < 0) return;
-  const style = zoneStyleEl.value;
-  if (!OCCUPANCY_ZONE_STYLES.includes(style)) return;
-  presenceStyles[n] = style;
-  syncZoneStyleControl();
-  draw();
+zoneStyleEl.onchange=()=>{
+ const n=activePresenceIndex(),choice=CHOICES[zoneStyleEl.value];if(n<0 || !choice)return;
+ [slotPolicies[n],presenceStyles[n]]=choice;slotStyleCodes[n]=null;syncZoneStyleControl();draw();
+};
+function renameElement(id=activeId) {
+  const info=elementInfo(id);if(!info.exists)return;
+  const name=window.prompt?.('Name (1–15 printable ASCII characters)',info.name);
+  if(name==null)return;
+  try {checkName(name);nameDevice=rsMarkerDevice;if(id==='master')roomName=name;else if(id.startsWith('excl'))maskNames[Number(id.slice(4))]=name;
+    else if(id.startsWith('door'))restartDoors[Number(id.slice(4))].name=name;else slotNames[Number(id.slice(4))]=name;
+    document.getElementById('nameMessage').textContent='';draw();
+  }catch(e){document.getElementById('nameMessage').textContent=e.message;}
+}
+document.getElementById('renameElement').onclick=()=>renameElement();
+document.getElementById('repairId').onclick=()=>{
+ const id=Number(document.getElementById('spatialId').value),n=activePresenceIndex();
+ const door=activeId.startsWith('door')?restartDoors[Number(activeId.slice(4))]:null;
+ try{const current=door?.spatialId ?? slotIds[n];checkSpatialIds([...spatialElements().filter(e=>e.spatialId!==current),{spatialId:id,name:elementInfo(activeId).name}]);
+ if(door)door.spatialId=id;else if(n>=0)slotIds[n]=id;draw();}catch(e){document.getElementById('nameMessage').textContent=e.message;}
 };
 
-// --- Zone state badges (A2) ----------------------------------------------------
-function stateForZoneId(id) {
-  if (!loadedZoneStates) return null;
-  if (id === 'master') return loadedZoneStates.master;
-  if (id.startsWith('pres')) return loadedZoneStates.presence[parseInt(id.slice(4), 10)];
-  if (id === 'ez0_in') return loadedZoneStates.entryExit[0].inner;
-  if (id === 'ez0_out') return loadedZoneStates.entryExit[0].outer;
-  if (id === 'ez1_in') return loadedZoneStates.entryExit[1].inner;
-  if (id === 'ez1_out') return loadedZoneStates.entryExit[1].outer;
-  if (id.startsWith('excl')) return loadedZoneStates.exclusions[parseInt(id.slice(4), 10)];
-  return ZONE_STATE.UNKNOWN;
-}
-
-/** Map a ZC-internal zone id to its converter property key (Phase D delete). */
-function propKeyForZoneId(id) {
-  if (id === 'master') return POLY_KEY.master;
-  if (id.startsWith('pres')) return POLY_KEY.presence[parseInt(id.slice(4), 10)];
-  if (id === 'ez0_in') return POLY_KEY.ez[0].inner;
-  if (id === 'ez0_out') return POLY_KEY.ez[0].outer;
-  if (id === 'ez1_in') return POLY_KEY.ez[1].inner;
-  if (id === 'ez1_out') return POLY_KEY.ez[1].outer;
-  if (id.startsWith('excl')) return EXCL_KEY[parseInt(id.slice(4), 10)];
-  return null;
-}
-
-function polyDirty(id) {
-  if (!deviceBaseline) return false;
-  const cur = polys[id], base = deviceBaseline[id];
-  if (!cur && !base) return false;
-  if (!cur || !base) return true;
-  if (cur.length !== base.length) return true;
-  return cur.some((v, i) => v.x !== base[i].x || v.y !== base[i].y);
-}
-
-function rectDirty(id) {
-  if (!deviceBaseline) return false;
-  const cur = rects[id], base = deviceBaseline[id];
-  if (!cur && !base) return false;
-  if (!cur || !base) return true;
-  return cur.x1 !== base.x1 || cur.y1 !== base.y1 || cur.x2 !== base.x2 || cur.y2 !== base.y2;
-}
-
-function styleDirty(id) {
-  if (!deviceBaselineStyles || !id.startsWith('pres') || !polys[id]) return false;
-  const n = parseInt(id.slice(4), 10);
-  return presenceStyles[n] !== deviceBaselineStyles[n];
-}
-
-function zoneBadgeState(id) {
-  if (!loadedZoneStates) return null;
-  const z = zoneById[id];
-  if (z.kind === 'poly' && (polyDirty(id) || styleDirty(id))) return 'edited';
-  if (z.kind === 'rect' && rectDirty(id)) return 'edited';
-  return stateForZoneId(id);
-}
-
-function updateZoneBadges() {
-  document.querySelectorAll('.state-dot[data-zone]').forEach((dot) => {
-    const s = zoneBadgeState(dot.dataset.zone);
-    if (s) dot.setAttribute('data-s', s);
-    else dot.removeAttribute('data-s');
-  });
-}
 function setMode(m) {
   mode = m; draft = []; selVert = -1;
   [...document.getElementById('modes').children].forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
@@ -1496,14 +1417,15 @@ document.getElementById('modes').onclick = (e) => {
 };
 document.getElementById('finish').onclick = finishDraft;
 document.getElementById('clearZone').onclick = () => {
-  delete polys[activeId]; delete rects[activeId]; draft = []; selVert = -1; draw();
+  if(activeId.startsWith('door')){deleteSelectedDoor();return;}
+  const n=activePresenceIndex();delete polys[activeId];delete rects[activeId];if(activeId==='master')roomName='Room';if(activeId.startsWith('excl'))maskNames[Number(activeId.slice(4))]=defaultName('mask',Number(activeId.slice(4))+1);if(n>=0){slotIds[n]=null;slotNames[n]=null;slotPolicies[n]=null;slotStyleCodes[n]=null;slotDetails[n]=null;presenceStyles[n]=OCCUPANCY_ZONE_STYLE.DEFAULT;}draft=[];selVert=-1;draw();
 };
 // Field is in DEGREES (intuitive); the wire attr 0x0100 is 0.1° units, so store deci-degrees.
 document.getElementById('yaw').oninput = (e) => { mount.yawDeciDeg = Math.round((parseFloat(e.target.value) || 0) * 10); draw(); };
 const clearAlignDot = () => { alignTarget = null; draw(); };
 document.getElementById('alignClear').onclick = clearAlignDot;
-document.getElementById('alignClear2').onclick = clearAlignDot;
 document.getElementById('panApplyErr').onclick = () => {
+  restartAlignUpdate();
   if (alignErrorDeg == null) return;
   const jogDeg = -alignErrorDeg;       // measured on hardware — see panUpdateAlignError()
   if (Math.abs(jogDeg) > 45) return;   // belt-and-suspenders; button is disabled past the cap
@@ -1512,475 +1434,87 @@ document.getElementById('panApplyErr').onclick = () => {
   panUpdateAlignError();                  // refresh the reversal note immediately
 };
 document.getElementById('inverted').onchange = (e) => { mount.inverted = e.target.checked; draw(); };
-document.getElementById('mountHeight').oninput = (e) => {
-  /* Operator-settable, exactly like yaw and the offsets. The device did not
-   * mount itself; the person who put it on the wall knows this number. An
-   * earlier draft made it read-only "because ZC has no input for it", which was
-   * circular - it had no input because none had been written. */
-  mount.heightMm = Math.max(0, Math.min(3000, Math.round(parseFloat(e.target.value) || 0)));
-  draw();
-};
 document.getElementById('mountOffsetX').oninput = (e) => { sensor.x = Math.round(parseFloat(e.target.value) || 0); draw(); };
 document.getElementById('mountOffsetY').oninput = (e) => { sensor.y = Math.round(parseFloat(e.target.value) || 0); draw(); };
 
 // Tool layout JSON = ABSOLUTE polygons + sensor placement (round-trips for editing).
 // The device-facing wire layout is produced separately by appToLayout() (Z2M sets).
-function toolToJSON() {
-  return JSON.stringify({
-    version: 3, tool: 'rld3-configurator',
-    sensor: {
-      x: sensor.x, y: sensor.y, yawDeciDeg: mount.yawDeciDeg, inverted: mount.inverted,
-      // Saved so an offline edit reprojects zones with the same geometry the
-      // device uses. Operator-settable, and written back like the offsets.
-      heightMm: mount.heightMm,
-    },
-    polys, rects, presenceStyles,
-  }, null, 2);
+function sameRoomGeometry(a,b) {
+ return Array.isArray(a) && Array.isArray(b) && a.length===b.length && a.every((p,i)=>p.x===b[i].x && p.y===b[i].y);
 }
+function sameMaskGeometry(a,b) {
+ return !!a && !!b && ['x1','y1','x2','y2'].every(key=>a[key]===b[key]);
+}
+function toolToJSON() {
+ return JSON.stringify({version:4,tool:'rld3-configurator',purpose:'layout, not a device backup',
+ sensor:{x:sensor.x,y:sensor.y,...mount},sensorHeightMm,scattererHeightMm,
+ polys,rects,presenceStyles,slotNames,slotPolicies,slotIds,slotStyleCodes,slotDetails,doors:restartDoors,
+ roomName,maskNames,restartMetadata,nameDevice},null,2);
+}
+let nameDevice='';
 function toolFromJSON(text) {
-  const o = JSON.parse(text);
-  if ((o.version !== 2 && o.version !== 3) || !o.sensor) throw new Error('not a supported v2/v3 tool layout');
-  sensor.x = Math.round(o.sensor.x || 0); sensor.y = Math.round(o.sensor.y || 0);
-  mount.yawDeciDeg = o.sensor.yawDeciDeg || 0; mount.inverted = !!o.sensor.inverted;
-  /* Only overwrite the height when the file actually carries one. A layout
-   * saved before 2026-08-22 has no heightMm, and `|| 0` would zero whatever the
-   * device just reported -- silently switching the elevation correction off and
-   * putting every exclusion zone back at the wrong radius. */
-  if (o.sensor.heightMm != null) {
-    mount.heightMm = Number(o.sensor.heightMm) || 0;
-    document.getElementById('mountHeight').value = mount.heightMm;
-  }
-  document.getElementById('yaw').value = mount.yawDeciDeg / 10;
-  document.getElementById('inverted').checked = mount.inverted;
-  document.getElementById('mountOffsetX').value = sensor.x;
-  document.getElementById('mountOffsetY').value = sensor.y;
-  for (const k of Object.keys(polys)) delete polys[k];
-  for (const k of Object.keys(rects)) delete rects[k];
-  Object.assign(polys, o.polys || {});
-  Object.assign(rects, o.rects || {});
-  const importedStyles = o.version >= 3 ? (o.presenceStyles || []) : [];
-  for (let n = 0; n < presenceStyles.length; n++) {
-    const style = importedStyles[n] ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
-    if (!OCCUPANCY_ZONE_STYLES.includes(style)) throw new Error(`invalid presenceStyles[${n}] "${style}"`);
-    presenceStyles[n] = style;
-  }
-  syncZoneStyleControl();
-  draw();
+ const o=JSON.parse(text);
+ if(![2,3,4].includes(o.version) || !o.sensor)throw new Error('not a supported v2/v3/v4 tool layout');
+ if(Object.keys(o.polys || {}).some(k=>k.startsWith('ez') && o.polys[k]?.length))throw new Error('Restart does not support EZ drawings; remove them explicitly before import');
+ const polygons=structuredClone(o.polys || {}),rectangles=structuredClone(o.rects || {}),doors=structuredClone(o.doors || []);
+ for(const [id,points] of Object.entries(polygons)){
+  if(!ZONES.some(z=>z.id===id && z.kind==='poly'))throw new Error('Unknown polygon '+id);
+  const valid=validatePolygon(points);if(!valid.ok)throw new Error(`${id}: ${valid.errors.join('; ')}`);
+ }
+ for(const [id,r] of Object.entries(rectangles))if(!/^excl[0-2]$/.test(id) || !['x1','x2','y1','y2'].every(k=>Number.isInteger(r[k]) && r[k]>=-32768 && r[k]<=32767) || r.x1>=r.x2 || r.y1>=r.y2)throw new Error('Invalid sensor mask '+id);
+ if(Object.keys(polygons).filter(k=>k.startsWith('pres')).length+doors.length>12)throw new Error('Zones and doors share the 12 record limit');
+ assertDoorsDisjoint(polygons.master,doors);
+ const styles=Array.from({length:12},(_,n)=>o.presenceStyles?.[n] ?? 'default'),policies=Array.from({length:12},(_,n)=>o.slotPolicies?.[n] ?? (styles[n]==='transit_only'?1:0)),ids=Array.from({length:12},(_,n)=>o.slotIds?.[n] ?? null),names=Array.from({length:12},(_,n)=>o.slotNames?.[n] ?? null);
+ if(styles.some(x=>!['none','default','bed','chair','couch','table','transit_only'].includes(x)) || policies.some(x=>![0,1,2].includes(x)))throw new Error('Invalid zone policy/style');
+ const elements=[...ids.map((id,n)=>polygons['pres'+n]?{spatialId:id,name:names[n]}:null).filter(Boolean),...doors];
+ for(const e of elements)if(e.spatialId==null)e.spatialId=nextSpatialId(elements);
+ const seen=new Set();for(const e of elements){if(!Number.isInteger(e.spatialId)||e.spatialId<0||e.spatialId>255||seen.has(e.spatialId))throw new Error('Invalid or duplicate spatial ID');seen.add(e.spatialId);}
+ let at=0;for(let n=0;n<12;n++)if(polygons['pres'+n]){ids[n]=elements[at++].spatialId;names[n] ||= defaultName(kindOf(policies[n]),ids[n]);checkName(names[n]);}
+ for(const d of doors){d.name ||= defaultName('door',d.spatialId);checkName(d.name);}
+ const importedCodes=o.slotStyleCodes || [],importedDetails=o.slotDetails || [];
+ for(let n=0;n<12;n++){const code=importedCodes[n],details=importedDetails[n];
+  if(code!=null && (!Number.isInteger(code) || code<0 || code>5 || code!==({none:0,default:1,chair:2,table:3,couch:4,bed:5,transit_only:0})[styles[n]]))throw new Error('Invalid stored style code');
+  if(details && (![0,1,2,3].includes(details.boundaryRole ?? 0) || ![0,1].includes(details.reflectionProfile ?? 0)))throw new Error('Invalid record metadata');
+ }
+ if(o.restartMetadata)decodeRestartLayout(encodeRestartLayout(o.restartMetadata));
+ const importedRoom=o.roomName ?? 'Room',importedMasks=o.maskNames ?? ['Mask 1','Mask 2','Mask 3'];checkName(importedRoom);if(importedMasks.length!==3)throw new Error('Three mask names required');importedMasks.forEach(checkName);
+ for(const k of ['x','y','yawDeciDeg'])if(o.sensor[k]!=null && !Number.isInteger(o.sensor[k]))throw new Error('Invalid sensor pose');
+ if(Math.abs(o.sensor.x ?? 0)>32767 || Math.abs(o.sensor.y ?? 0)>32767 || Math.abs(o.sensor.yawDeciDeg ?? 0)>1800)throw new Error('Sensor pose out of range');
+ for(const [key,value] of [['sensorHeightMm',o.sensorHeightMm ?? 0],['scattererHeightMm',o.scattererHeightMm ?? ((o.sensor.heightMm ?? 0)>0?(o.sensorHeightMm ?? 0)-o.sensor.heightMm:0)]])if(!Number.isInteger(value)||value<0||value>3000)throw new Error('Invalid '+key);
+ // No mutation above this point.
+ Object.keys(polys).forEach(k=>delete polys[k]);Object.assign(polys,polygons);
+ Object.keys(rects).forEach(k=>delete rects[k]);Object.assign(rects,rectangles);
+ restartDoors=doors;sensor.x=o.sensor.x || 0;sensor.y=o.sensor.y || 0;mount.yawDeciDeg=o.sensor.yawDeciDeg || 0;mount.inverted=!!o.sensor.inverted;mount.heightMm=o.sensor.heightMm ?? 0;
+ sensorHeightMm=o.sensorHeightMm ?? 0;scattererHeightMm=o.scattererHeightMm ?? (mount.heightMm>0?sensorHeightMm-mount.heightMm:0);
+ for(let n=0;n<12;n++){presenceStyles[n]=styles[n];slotNames[n]=names[n];slotPolicies[n]=policies[n];slotIds[n]=ids[n];slotStyleCodes[n]=o.slotStyleCodes?.[n] ?? null;slotDetails[n]=o.slotDetails?.[n] ?? null;}
+ roomName=importedRoom;maskNames=importedMasks;restartMetadata=o.restartMetadata ?? null;nameDevice=o.nameDevice ?? '';
+ document.getElementById('yaw').value=mount.yawDeciDeg/10;document.getElementById('inverted').checked=mount.inverted;
+ document.getElementById('mountOffsetX').value=sensor.x;document.getElementById('mountOffsetY').value=sensor.y;
+ if(!zoneById[activeId] || activeId.startsWith('door'))activeId='master';syncZoneStyleControl();draw();
 }
 
 document.getElementById('export').onclick = () => {
   document.getElementById('io').value = toolToJSON();
-};
-document.getElementById('z2m').onclick = () => {
-  try { document.getElementById('io').value = JSON.stringify(layoutToZ2mSets(appToLayout()), null, 2); }
-  catch (err) { document.getElementById('io').value = 'ERROR: ' + err.message; }
 };
 document.getElementById('import').onclick = () => {
   try { toolFromJSON(document.getElementById('io').value); }
   catch (err) { alert('Import failed: ' + err.message); }
 };
 
-// --- Live device provisioning (MQTT over WebSocket) ----------------------------
-let z2mAdapter = null, z2mClient = null;
-let liveDevice = '', liveOn = false, liveKeepAlive = null, livePoll = null, liveAutoOff = null;
-/* liveOn is this tool's INTENT, and only setLive() may change it.
- *
- * Z2M's `live_view` is a CACHE, not the device. The underlying attribute
- * (ATTR_CONFIG_MODE 0x0104) is volatile AND not reportable, so after a device
- * reboot the device is off while Z2M keeps serving the pre-reboot 'ON' forever
- * — its state is additive and never expires keys. Adopting that value used to
- * revert the operator's own toggle within ~100 ms, and worse, left this tool
- * believing live view was already on so it never sent the enabling write:
- * live view could then be neither turned off NOR on. See TODO RLD3-022.
- *
- * liveReported is what the cache last claimed, kept only to show disagreement
- * and to drive a bounded corrective re-write. The device LED (dim blue =
- * streaming) is the only ground truth. */
-let liveReported = null, liveReassertAt = 0, liveReassertCount = 0;
-const LIVE_REASSERT_MS = 10000;   /* don't re-write faster than this */
-const LIVE_REASSERT_MAX = 3;      /* then stop and just warn, rather than loop */
-// Auto-off is a safety stop, not a UX limit: if the user forgets Live view on, it
-// otherwise polls `/get` every 300ms forever, spamming the MQTT bus. 30 min is far
-// longer than any real config session, so it never interrupts legitimate use.
-const LIVE_AUTOOFF_MS = 30 * 60 * 1000;
-const mqStatus = document.getElementById('mqStatus');
-const setMq = (t, cls) => { mqStatus.textContent = t; mqStatus.className = cls || ''; };
-// One shared message window: connect, read, write, delete and live-view feedback
-// all report here, directly under the Device command group that produces them.
-const setWrite = setMq;
-
-document.getElementById('mqConnect').onclick = async () => {
-  const host = document.getElementById('mqHost').value.trim();
-  const port = document.getElementById('mqPort').value.trim();
-  const user = document.getElementById('mqUser').value;
-  const pass = document.getElementById('mqPass').value;
-  const device = document.getElementById('mqDev').value.trim();
-  setMq(`connecting to ws://${host}:${port} …`);
-  try {
-    if (z2mClient) z2mClient.end();
-    const client = await mqttConnect({ url: `ws://${host}:${port}`, username: user || undefined, password: pass || undefined });
-    const transport = {
-      publish: (t, p) => client.publish(t, p),
-      subscribe: (t, h) => { client.subscribe(t); client.onMessage((tp, m) => { if (tp === t) h(m); }); },
-    };
-    z2mAdapter = createZ2mAdapter({ transport, device });
-    z2mClient = client;
-    liveDevice = device;
-    // The device state topic carries live_view confirmation and the polled `targets`
-    // stream: setLive() polls `<device>/get {targets:''}`, the converter reads the
-    // octet from cluster 0xFDCD and republishes it here as `targets`. (Octet
-    // *reporting* crashes the device SDK, so it is a poll, not a report.)
-    client.subscribe(`zigbee2mqtt/${device}`);
-    client.onMessage((tp, m) => {
-      const raw = typeof m === 'string' ? m : new TextDecoder().decode(m);
-      if (tp !== `zigbee2mqtt/${device}`) return;
-      let s; try { s = JSON.parse(raw); } catch { return; }
-      Object.assign(deviceReports, s);  // accumulate for Read from device
-      if (s.live_view != null) reconcileLiveView(s.live_view === 'ON' || s.live_view === true);
-      if (s.targets !== undefined) { liveTargets = Array.isArray(s.targets) ? s.targets : []; draw(); panUpdateReadout(); }
-    });
-    // Connect only proves the BROKER answered — the sensor may be unpowered or
-    // unreachable over Zigbee and nothing here would notice. Don't claim the
-    // sensor until it answers a read; the read's own reply check settles it.
-    setMq(`broker connected · checking sensor "${device}" …`);
-    setTimeout(() => document.getElementById('mqRead').click(), 100);
-  } catch (e) {
-    z2mAdapter = null;
-    setMq('connect failed: ' + e.message, 'err');
-  }
-};
-
-// SAFE provision (A3): read-modify-write. Build an edit session from the device
-// baseline layout, apply the operator's current geometry as edits, build the
-// host-tested provision plan (empty-over-real / invalid drafts skipped), confirm,
-// then write one set per frame and re-read to verify. The baseline→session→plan
-// glue is pure and host-tested in src/provision_glue.js.
-document.getElementById('mqProvision').onclick = () => {
-  if (!z2mAdapter) { setWrite('not connected — hit Connect first', 'err'); return; }
-  try {
-    // Baseline = the last device read (wire frame), or empty if no read yet.
-    const { session, plan } = planFromLayouts(deviceBaselineLayout, appToLayout());
-    if (plan.sets.length === 0) {
-      // A cleared loaded zone is a real change the BULK plan deliberately refuses
-      // to write — a blank is never sent over live device state. Deleting a zone
-      // is a separate, explicit action (Phase D). Say so instead of "no changes".
-      const cleared = plan.skipped.filter((s) => s.reason === 'empty-not-written');
-      let msg, cls = '';
-      if (cleared.length) {
-        msg = `⚠ ${cleared.map((s) => s.zone).join(', ')} cleared here but NOT removed from the sensor.\n`
-            + 'Write to Sensor cannot delete a zone (a blank is never written over real\n'
-            + 'device state). Select the zone and use "Delete from Sensor" instead.';
-        cls = 'err';
-      } else {
-        msg = 'nothing to write — no changes from the device baseline';
-      }
-      if (plan.warnings.length) msg += '\n⚠ ' + plan.warnings.join('\n⚠ ');
-      const pv = layoutWarnings(appToLayout());
-      if (pv.length) msg += '\n⚠ ' + pv.join('\n⚠ ');
-      setWrite(msg, cls);
-      return;
-    }
-
-    // Confirm dialog: WRITE / SKIP(non-trivial) / warnings.
-    const lines = [];
-    // PV-11 last chance: this is the point after which the geometry is live.
-    for (const w of layoutWarnings(appToLayout())) lines.push(`⚠ ${w}`);
-    for (const s of plan.sets) lines.push(`WRITE  ${s.key}`);
-    for (const s of plan.skipped) if (s.reason !== 'unchanged') lines.push(`SKIP   ${s.zone} (${s.reason})`);
-    for (const w of plan.warnings) lines.push(`⚠ ${w}`);
-    if (!deviceBaselineLayout) lines.push('(no device read this session — baseline treated as empty)');
-    if (!window.confirm(`Write to "${liveDevice}"?\n\n${lines.join('\n')}`)) {
-      setWrite('write cancelled', '');
-      return;
-    }
-
-    const writtenLayout = appToLayout();  // snapshot before any async re-read
-    for (const { key, value } of plan.sets) z2mAdapter.setKey(key, value);
-    markProvisioned(session, plan);
-    pendingConfirm = { plan, writtenLayout };
-    setWrite(`wrote ${plan.sets.length} set(s); re-reading to confirm…`, 'ok');
-    // Re-read after the writes settle (Z2M serializes per device).
-    setTimeout(() => document.getElementById('mqRead').click(), 800);
-  } catch (e) {
-    setWrite('write failed: ' + e.message, 'err');
-  }
-};
-
-// Phase D: explicit per-zone delete. Deliberately OUTSIDE the bulk provision
-// plan — a dedicated, single-zone action, not a side effect of Write to Sensor.
-// Sends an empty value for the active zone's converter key: the converter (D2)
-// turns that into a zero-length octet (polygons) or the LD2450's own "unused"
-// convention "0,0,0,0" (exclusions); the firmware (D1) erases the NVS/LD2450
-// state and refreshes read-back to EMPTY. Re-reads afterward and reports
-// success only once the device itself confirms the zone is gone.
-document.getElementById('deleteZone').onclick = () => {
-  if (!z2mAdapter) { setWrite('not connected — hit Connect first', 'err'); return; }
-  const z = zoneById[activeId];
-  const key = propKeyForZoneId(activeId);
-  if (!key) { setWrite(`cannot delete "${z.label}": no device key for this zone`, 'err'); return; }
-  if (stateForZoneId(activeId) !== ZONE_STATE.LOADED) {
-    setWrite(`${z.label} is not currently loaded on the sensor — nothing to delete`, '');
-    return;
-  }
-  if (!window.confirm(`Delete "${z.label}" from "${liveDevice}"?\n\n`
-      + 'This erases it from the sensor immediately. It is separate from Write to\n'
-      + 'Sensor and is not affected by unsaved edits to other zones.')) {
-    setWrite('delete cancelled', '');
-    return;
-  }
-
-  z2mAdapter.setKey(key, '');
-  pendingDelete = { zoneId: activeId };
-  setWrite(`deleting ${z.label}; re-reading to confirm…`, 'ok');
-  setTimeout(() => document.getElementById('mqRead').click(), 800);
-};
-
-document.getElementById('mqRead').onclick = () => {
-  if (!z2mAdapter) { setMq('not connected — hit Connect first', 'err'); return; }
-  setMq('reading from sensor…');
-  deviceReports = {};
-
-  const allKeys = deviceReadKeys();
-  // The first two small scalars (yaw, inverted) may batch; every remaining
-  // key is read individually. That is required for 56-byte polygon octets and is
-  // intentionally also used for the small style scalars to keep this path simple.
-  const scalarKeys = allKeys.slice(0, 2);
-  const blobKeys = allKeys.slice(2);
-  z2mAdapter.readKeys(scalarKeys);
-  for (const k of blobKeys) z2mAdapter.readKeys([k]);
-
-  setTimeout(() => {
-    // Silence is the one answer we must not read as data. An unpowered board or a
-    // broken Zigbee route looks exactly like a working device with nothing to say,
-    // and every downstream step (baseline, badges, write diff) would then treat
-    // "no reply" as "device is empty". Fail loud and change nothing.
-    if (Object.keys(deviceReports).length === 0) {
-      const wasWrite = pendingConfirm, wasDelete = pendingDelete;
-      pendingConfirm = null; pendingDelete = null;
-      let msg = `broker connected · sensor "${liveDevice}" NOT RESPONDING — no reply to the read.\n`
-              + 'Check the board is powered and joined; nothing was loaded or changed here.';
-      if (wasWrite) msg += '\n⚠ the preceding write is UNCONFIRMED.';
-      if (wasDelete) msg += '\n⚠ the preceding delete is UNCONFIRMED.';
-      setMq(msg, 'err');
-      return;
-    }
-
-    const { layout, zoneStates: states, warnings } = layoutFromReports(deviceReports);
-
-    // 2026-08-08: device polygons are room-frame INCLUDING the device's own
-    // sensor offset (0,0 on an unconfigured/older device — the old "sensor at
-    // origin" default falls out of that automatically), so sync sensor.x/y to
-    // whatever the device reports rather than forcing it to zero.
-    sensor.x = layout.mount.offsetXMm ?? 0;
-    sensor.y = layout.mount.offsetYMm ?? 0;
-    document.getElementById('mountOffsetX').value = sensor.x;
-    document.getElementById('mountOffsetY').value = sensor.y;
-
-    // Populate poly zones from the device read.
-    const setOrClear = (id, verts) => { if (verts) polys[id] = verts; else delete polys[id]; };
-    setOrClear('master', layout.master?.vertices);
-    for (let n = 0; n < 8; n++) {
-      setOrClear('pres' + n, layout.presence[n]?.vertices);
-      presenceStyles[n] = layout.presence[n]?.style ?? OCCUPANCY_ZONE_STYLE.DEFAULT;
-    }
-    syncZoneStyleControl();
-    for (let p = 0; p < 2; p++) {
-      setOrClear(`ez${p}_in`, layout.entryExit[p]?.inner?.vertices);
-      setOrClear(`ez${p}_out`, layout.entryExit[p]?.outer?.vertices);
-    }
-    // Populate exclusions (Phase B read-back). Both sides are SENSOR frame — the
-    // mount is applied only at render (rectRoomCorners) — so this is a direct copy.
-    for (let n = 0; n < 3; n++) {
-      const r = layout.exclusions[n];
-      if (r) rects['excl' + n] = { x1: r.x1, y1: r.y1, x2: r.x2, y2: r.y2 };
-      else delete rects['excl' + n];
-    }
-
-    // Adopt device mount (yaw + inverted) only when the device reported it.
-    if (states.mount === ZONE_STATE.LOADED) {
-      mount.yawDeciDeg = layout.mount.yawDeciDeg;
-      mount.inverted = layout.mount.inverted;
-      document.getElementById('yaw').value = mount.yawDeciDeg / 10;
-      document.getElementById('inverted').checked = mount.inverted;
-    }
-
-    /* Height is adopted independently of mount LOADED, which gates on yaw AND
-     * inverted. It is a separate attribute (0x0107) that may be reported when
-     * those are not, and the geometry is wrong without it. */
-    if (layout.mount.heightMm != null) {
-      mount.heightMm = layout.mount.heightMm;
-      document.getElementById('mountHeight').value = mount.heightMm;
-    }
-
-    loadedZoneStates = states;
-    // Snapshot current poly vertices + exclusion rects as the baseline for badge
-    // dirty-detection (poly ids and excl ids are disjoint, so one map holds both).
-    deviceBaseline = {};
-    for (const [k, v] of Object.entries(polys)) deviceBaseline[k] = v.map((pt) => ({ x: pt.x, y: pt.y }));
-    for (const [k, r] of Object.entries(rects)) deviceBaseline[k] = { ...r };
-    deviceBaselineStyles = [...presenceStyles];
-    // Keep the read-back layout (wire frame, sensor-at-origin) as the provision
-    // baseline for A3's safe read-modify-write. LOADED zones only — EMPTY/UNKNOWN/
-    // INVALID stay null so the plan never treats them as real state to protect.
-    // DEEP COPY, not a ref: setOrClear aliased polys[id] to layout.<zone>.vertices,
-    // so an in-place vertex drag/delete would otherwise mutate this baseline in
-    // lockstep — the write diff then sees no change ("nothing to write") and the
-    // edit silently never provisions. Snapshot it independent of the live polys.
-    deviceBaselineLayout = JSON.parse(JSON.stringify(layout));
-
-    const note = warnings.length ? ' · ' + warnings.join('; ') : '';
-    setMq(`read complete · sensor "${liveDevice}" responding` + note, warnings.length ? '' : 'ok');
-    draw();
-
-    // Live view follows a read (which Connect also triggers) — the user gets the
-    // moving-target overlay without a separate toggle. setLive re-arms idempotently.
-    setLive(true);
-
-    // C1: if this read was triggered by a provision, diff re-read against the write.
-    if (pendingConfirm) {
-      const { plan: pc, writtenLayout } = pendingConfirm;
-      pendingConfirm = null;
-      const { confirmed, unconfirmed } = confirmPlan(pc, writtenLayout, layout);
-      const lines = confirmed.map((k) => `✓ confirmed: ${k}`);
-      for (const k of unconfirmed) lines.push(`⚠ WRITE NOT CONFIRMED: ${k}`);
-      setWrite(lines.join('\n'), unconfirmed.length > 0 ? 'err' : 'ok');
-    }
-
-    // D3: if this read was triggered by a delete, confirm the zone actually
-    // reads back EMPTY — loud if it doesn't (mirrors C1: report the device's
-    // own truth, never assume the write landed just because it was sent).
-    if (pendingDelete) {
-      const { zoneId } = pendingDelete;
-      pendingDelete = null;
-      const label = zoneById[zoneId].label;
-      const s = stateForZoneId(zoneId);
-      if (s === ZONE_STATE.EMPTY) {
-        setWrite(`✓ deleted: ${label}`, 'ok');
-      } else {
-        setWrite(`⚠ NOT deleted: ${label} (device still reports ${s})`, 'err');
-      }
-    }
-  }, 3000);
-};
-
-const mqLive = document.getElementById('mqLive');
-function updateLiveBtn() {
-  const mismatch = (liveReported !== null && liveReported !== liveOn);
-  mqLive.textContent = (liveOn ? 'Live view: ON' : 'Live view: OFF') + (mismatch ? ' ⚠' : '');
-  mqLive.style.color = liveOn ? '#22d3ee' : '';
-  mqLive.title = mismatch
-    ? `Z2M reports the device is ${liveReported ? 'ON' : 'OFF'}, which disagrees with this setting.\n`
-      + 'Z2M caches live_view and it goes stale after a device reboot (the attribute is '
-      + 'volatile and not reportable), so this tool trusts your setting, not the cache.\n'
-      + 'Ground truth is the sensor LED: dim blue = actually streaming.'
-    : '';
-  panUpdateReadout();   // target readout depends on live view being on
-}
-
-/* Reconcile the cached live_view against our intent — never adopt it.
- *
- * On disagreement, re-assert our intent instead of surrendering to the cache.
- * That converges both directions: a stale 'ON' after a reboot gets written back
- * to OFF (and the converter's optimistic state updates the cache), and a device
- * that genuinely dropped out gets re-enabled — the same self-healing the 12-min
- * keepalive provides, just event-driven.
- *
- * Bounded deliberately. If the write cannot land at all — e.g. a stale Zigbee
- * source route, which is exactly how this failure presented on 2026-08-02 — the
- * cache never changes and an unbounded retry would spam the bus at the device's
- * republish rate. After LIVE_REASSERT_MAX attempts it stops and leaves the ⚠
- * showing, which is the honest outcome: the tool cannot fix a broken route, and
- * pretending otherwise by retrying forever hides it. */
-function reconcileLiveView(reported) {
-  liveReported = reported;
-  if (reported === liveOn) { liveReassertCount = 0; updateLiveBtn(); return; }
-  updateLiveBtn();                       // surface the ⚠ immediately
-  if (!z2mClient || !liveDevice) return;
-  if (liveReassertCount >= LIVE_REASSERT_MAX) return;
-  const now = Date.now();
-  if (now - liveReassertAt < LIVE_REASSERT_MS) return;
-  liveReassertAt = now; liveReassertCount++;
-  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`,
-                    JSON.stringify({ live_view: liveOn ? 'ON' : 'OFF' }));
-  setMq(`live view: device reports ${reported ? 'ON' : 'OFF'}, re-asserting `
-        + `${liveOn ? 'ON' : 'OFF'} (${liveReassertCount}/${LIVE_REASSERT_MAX})`, '');
-}
-function setLive(on) {
-  if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
-  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: on ? 'ON' : 'OFF' }));
-  /* Fresh intent: allow the corrective re-writes again. Without this reset a
-   * session that exhausted its budget fighting a stale cache would never
-   * re-assert for a later, legitimate toggle. */
-  liveOn = on; liveReassertAt = 0; liveReassertCount = 0; updateLiveBtn();
-  if (liveKeepAlive) { clearInterval(liveKeepAlive); liveKeepAlive = null; }
-  if (livePoll) { clearInterval(livePoll); livePoll = null; }
-  if (liveAutoOff) { clearTimeout(liveAutoOff); liveAutoOff = null; }
-  if (on) {
-    // Safety stop — quiet the bus if Live view is left running unattended.
-    liveAutoOff = setTimeout(() => {
-      setLive(false);
-      setMq('live view auto-off (30 min) — bus cleared', '');
-    }, LIVE_AUTOOFF_MS);
-    // Re-arm under the device's 15-min auto-off (sliding window).
-    liveKeepAlive = setInterval(() => z2mClient && z2mClient.publish(
-      `zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ live_view: 'ON' })), 12 * 60 * 1000);
-    // Poll target positions through the converter's `targets` read key. It maps to
-    // ep1.read(0xFDCD, [0x0013]) — the same numeric custom-cluster read the converter
-    // uses for every other attribute, so it frames correctly and the device answers;
-    // fromZigbee decodes the octet and publishes `targets` on the device state topic
-    // (handled above). The generic `{read:{cluster,attributes}}` command frames the
-    // custom cluster manufacturer-specific and the device rejects it UNSUPPORTED_CLUSTER.
-    livePoll = setInterval(() => {
-      if (!z2mClient) return;
-      z2mClient.publish(`zigbee2mqtt/${liveDevice}/get`, JSON.stringify({ targets: '' }));
-    }, 300);
-  } else {
-    liveTargets = []; draw();
-  }
-}
-mqLive.onclick = () => setLive(!liveOn);
-
-/* ==== Pan Align — motor jog + radar target readout ============================
- * ZC → ESP32 (over the converter, MQTT):
- *   zigbee2mqtt/<dev>/set  {"pan_jog": <signed int half-steps>}   + = CW, − = CCW (map view, from above)
- *   zigbee2mqtt/<dev>/set  {"pan_stop": true}
- * The Coarse/Fine inputs are in DEGREES — the operator has no reason to know or care
- * about half-steps, so the °→half-step conversion (0.088°/half-step, 4096/rev) happens
- * invisibly in panClampDegreesToSteps() below; pan_jog on the wire is still half-steps.
- * ⚠️ THERE IS NO TRAVEL LIMIT, AND NOTHING PROTECTS THE CABLE. The firmware caps each
- * jog to 45° (512 half-steps) — PAN_JOG_MAX_STEPS, per press — and that is the only
- * guard that exists. There is no absolute position, no home, and no cumulative clamp:
- * `pan_motor.h` and `pan_step.h` both say so outright, and the travel clamp, home and
- * position tracking were all REMOVED 2026-07-24 (deliberate: don't impose a prohibitive
- * limit, make the operator responsible). Repeated jogs in one direction WILL keep going.
- * Cumulative cable twist is the operator's to track.
- *
- * This comment previously claimed the firmware clamped total travel to ±135° and that
- * "nothing entered here can twist it". That was false, and a comment asserting a safety
- * property the code does not have is worse than no comment — corrected 2026-08-08.
- * The retired `pan_limit` attribute still visible over MQTT is not an active clamp.
- * There is NO motor-position feedback: the motor is open-loop (no encoder), so instead of a
- * meaningless commanded-step count the readout shows the RADAR's read of the target (x,y) in
- * room mm. During a survey, stand at a known spot and jog until the sensor's read matches
- * where you actually are — the radar is the only real measurement. Needs Live view ON. */
 const PAN_DEG_PER_STEP = 360 / 4096;
 function panUpdateReadout() {
-  const el = document.getElementById('panStatus');
-  if (!el) return;
-  if (!liveOn) { el.textContent = 'target: — (live view off)'; return; }
-  const pts = (liveTargets || []).filter(t => t && Number.isFinite(t.x) && Number.isFinite(t.y));
-  if (!pts.length) { el.textContent = 'target: none in view'; return; }
-  el.textContent = 'target: ' + pts.map(t => `(${Math.round(t.x)}, ${Math.round(t.y)}) mm`).join('  ');
+  document.getElementById('panStatus').textContent = rsFrame ? `restart frame ${rsFrame.frame_sequence}` : 'restart: no live frame';
 }
-function panJog(steps) {
-  if (!z2mClient || !liveDevice) { setMq('not connected — hit Connect first', 'err'); return; }
-  // No clamp here and none on the device beyond the 45°-per-press cap — see the
-  // panel comment above. Net rotation is unbounded; the operator owns cable twist.
-  z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_jog: steps }));
+async function panJog(steps) {
+  if (!rsClient) { setRs('Connect to the restart device first.', 'err'); return; }
+  if (!Number.isInteger(steps) || !steps || Math.abs(steps) > 512) return;
+  try { rsMqtt.publish(rsClient.topics.setTopic, JSON.stringify({ pan_jog: steps })); }
+  catch (error) { setRs(error.message, 'err'); return; }
+  yawWindow.reset(); rsFrame = null; alignErrorDeg = null;
+  setRs('Jog requested; physical completion is not reported. Wait for movement to finish, then check the live spread.');
+  draw();
 }
-function panStop() {
-  if (z2mClient && liveDevice) z2mClient.publish(`zigbee2mqtt/${liveDevice}/set`, JSON.stringify({ pan_stop: true }));
-}
+
 // Clamp a degrees-based step-size input to its own [min,max] and convert to the
 // half-step count panJog() needs. A typed value can exceed the HTML max attribute
 // (which only bounds the spinner), so clamp in JS before jogging — belt-and-
@@ -2001,20 +1535,64 @@ function panClampDegreesToSteps(el, defDeg) {
   document.getElementById('panCCWf').onclick = () => panJog(-fine());
   document.getElementById('panCWf').onclick  = () => panJog(+fine());
   document.getElementById('panCWc').onclick  = () => panJog(+coarse());
-  document.getElementById('panStop').onclick = panStop;
   panUpdateReadout();       // seed the target readout at boot
 }
+
+
+
+function restartAlignUpdate() {
+  const box = document.getElementById('alignStatus');
+  if (!box) return;
+  const samePoint = rsPose && alignTarget && JSON.stringify([alignTarget, rsPose.sensor]) === rsYawPoint;
+  if (!samePoint) { yawWindow.reset(); rsYawPoint = rsPose && alignTarget ? JSON.stringify([alignTarget, rsPose.sensor]) : ''; }
+  const result = yawWindow.summary(performance.now(), Number(document.getElementById('yawSpread').value));
+  const poseMatches = rsPose && sensor.x === rsPose.sensor.x && sensor.y === rsPose.sensor.y && wrapDeg((mount.yawDeciDeg - rsPose.yaw) / 10) === 0 && mount.inverted === rsPose.inverted;
+  if (!poseMatches) yawWindow.reset();
+  alignErrorDeg = rsLiveOn && poseMatches && result.valid ? result.errorDeg : null;
+  const blocker = !rsPose ? rsPoseProblem
+    : !poseMatches ? 'editor pose differs from the device; read back layout'
+    : !rsLiveOn ? 'enable Live view'
+    : !alignTarget ? 'place You Are Here inside a zone, then stand on the mark'
+    : !result.valid ? result.reason : '';
+  box.textContent = alignErrorDeg == null ? 'Yaw unavailable: ' + blocker
+    : `current yaw error ${result.errorDeg.toFixed(1)}° · spread ${result.spreadDeg.toFixed(1)}° (${result.count}/12 frames) · ${result.settled ? 'settled' : 'settling'}`;
+  const inZone = alignTarget && Array.from({length: 12}, (_, i) => polys['pres' + i])
+    .some((poly) => poly?.length >= 3 && pointInPoly(poly, alignTarget));
+  document.getElementById('yawWarning').textContent = alignTarget && !inZone
+    ? 'You Are Here is outside every zone. A track retirement restarts the current check; the held result stays. Place the mark inside an occupancy zone and stand there.' : '';
+  if (!rsHeldYaw && alignErrorDeg != null && result.settled && rsFrame) {
+    const sl = rsFrame.slots.find((s) => s.valid);
+    rsHeldYaw = { ...result, device: rsMarkerDevice, utc: new Date().toISOString(),
+      distanceMm: Math.hypot(sl.x_mm - rsPose.sensor.x, sl.y_mm - rsPose.sensor.y),
+      boot: rsFrame.boot_session, sequence: rsFrame.frame_sequence,
+      transform: rsFrame.transform_generation, token: sl.track_token ?? 'none',
+      point: { ...alignTarget }, sensor: { ...rsPose.sensor } };
+  }
+  document.getElementById('yawHeld').textContent = rsHeldYaw
+    ? `HELD yaw error ${rsHeldYaw.errorDeg.toFixed(1)}° · spread ${rsHeldYaw.spreadDeg.toFixed(1)}° · ${rsHeldYaw.count} frames · distance ${(rsHeldYaw.distanceMm / 1000).toFixed(2)} m\n${rsHeldYaw.utc} · ${rsHeldYaw.device} · frame ${rsHeldYaw.boot}/${rsHeldYaw.sequence} · transform ${rsHeldYaw.transform} · track ${rsHeldYaw.token}\nmark (${rsHeldYaw.point.x}, ${rsHeldYaw.point.y}) mm · sensor (${rsHeldYaw.sensor.x}, ${rsHeldYaw.sensor.y}) mm`
+    : 'No held result yet.';
+  panUpdateAlignError(); panUpdateReadout();
+}
+let rsYawPoint = '', rsHeldYaw = null;
+document.getElementById('yawNewCheck').onclick = () => {
+  rsHeldYaw = null; yawWindow.reset(); restartAlignUpdate();
+};
+setInterval(() => { restartAlignUpdate(); }, 250);
 
 // boot
 syncZoneStyleControl();
 cv.style.cursor = mode === 'pan' ? 'grab' : 'crosshair';   // match the default mode
-syncZoneButtons();
-resize();
-fitView();
+
 // --- Restart device panel ----------------------------------------------------------
-let rsClient = null, rsMqtt = null, rsLiveOn = false, rsLastSlots = [];
 const rsMsg = document.getElementById('rsMsg');
 const setRs = (t, cls) => { rsMsg.textContent = t; rsMsg.className = cls || ''; };
+function renderZoneStates(frame,state={}) {
+  document.getElementById('rsZoneStates').textContent=(state.stream_state ?? frame?.stream_state)!=='ok'
+    ? 'Zone state: unavailable while radar stream is interrupted'
+    : frame?.zone_mapping!=='ready' || !Array.isArray(frame.zone_states)
+      ? 'Zone mapping unavailable; read the active layout'
+      : frame.zone_states.map(z=>`${z.name} (ID ${z.spatial_id}): ${z.occupied?'occupied':'vacant'}`).join(' · ') || 'No active zones';
+}
 function rsSummary(st) {
   return `session ${st.boot_session} rev ${st.interface_revision} - layout gen ${st.config_generation} hash ${st.config_hash} `
     + `tgen ${st.transform_generation} - ${st.config_state}${st.config_state === 'rejected' ? ` (${st.config_reason} ${st.config_detail}@${st.config_offset})` : ''} `
@@ -2026,15 +1604,23 @@ document.getElementById('rsConnect').onclick = async () => {
   const user = document.getElementById('mqUser').value;
   const pass = document.getElementById('mqPass').value;
   const device = document.getElementById('rsDev').value.trim();
-  const baseTopic = document.getElementById('rsBase').value.trim() || 'zigbee2mqtt';
+  const baseTopic = document.getElementById('rsBase').value.trim() || 'z2m-sandbox';
   const wsField = document.getElementById('rsWsUrl').value.trim();
   const wsUrl = wsField.startsWith('/') ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${wsField}`
     : (wsField || `ws://${host}:${port}`);
   if (!device) { setRs('restart: name the sensor first', 'err'); return; }
+  const connectionEpoch=++rsConnectionEpoch;
+  rsHeldYaw=null;rsRetired=null;
+  document.getElementById('rsOccupancy').textContent='Room occupancy: awaiting selected device';
+  document.getElementById('rsZoneStates').textContent='Zone mapping unavailable; reading selected device';
+  document.getElementById('rsLastEvent').textContent='';
+  rsPoseEpoch++; rsClient = null; rsPose = null; rsFrame = null; rsLiveOn = false; rsLastSlots = [];
+  rsMarkerDevice = ''; rsMarkerBase = ''; yawWindow.reset();
   setRs(`restart: connecting to ${wsUrl} ...`);
   try {
     if (rsMqtt) rsMqtt.end();
     const client = await mqttConnect({ url: wsUrl, username: user || undefined, password: pass || undefined });
+    if(connectionEpoch!==rsConnectionEpoch){client.end();return;}
     const handlers = new Map();
     client.onMessage((tp, m) => { for (const h of handlers.get(tp) || []) h(typeof m === 'string' ? m : new TextDecoder().decode(m)); });
     const transport = {
@@ -2043,24 +1629,68 @@ document.getElementById('rsConnect').onclick = async () => {
     };
     rsMqtt = client;
     rsClient = createRestartClient({ transport, device, baseTopic });
+    rsMarkerDevice = device; rsMarkerBase = baseTopic;
     rsClient.onLiveFrame((f) => {
+      if(connectionEpoch!==rsConnectionEpoch)return;
       if (!rsLiveOn) return;   // a cached republish while off is not a live frame
       rsFrame = f;
+      if (rsPose && (rsPose.boot !== f.boot_session || rsPose.transform !== f.transform_generation)) {
+        const previous = rsPose, epoch = rsPoseEpoch, client = rsClient;
+        rsPoseProblem = `live pose identity ${f.boot_session}/${f.transform_generation} differs from read-back ${previous.boot}/${previous.transform}; read back layout again`;
+        rsPose = null;
+        // An OFF read can still acquire cached top-level status. Reconcile
+        // with another byte read-back plus live-coherent status. Restore the layout's
+        // pose if its boot, generation and hash are unchanged. Never adopt a
+        // frame's transform blindly or use samples while this is pending.
+        if (previous.hash != null) client.readLayout().then(async (blob) => {
+          const st = await client.readStatus();
+          const verifiedHash = (restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0');
+          if (rsClient !== client || rsPoseEpoch !== epoch || rsPose) return;
+          if (verifiedHash === previous.hash && decodeRestartLayout(blob).generation === previous.generation && st.boot_session === previous.boot && st.config_generation === previous.generation && st.config_hash === previous.hash) {
+            rsPose = { ...previous, transform: st.transform_generation };
+            yawWindow.reset();
+          }
+          restartAlignUpdate();
+        }).catch((e) => {
+          if (rsClient === client && rsPoseEpoch === epoch && !rsPose) {
+            rsPoseProblem = `pose verification failed: ${e.message}; read back layout again`;
+            restartAlignUpdate();
+          }
+        });
+      }
+      if (rsPose) yawWindow.update(f, alignTarget, rsPose.sensor, performance.now(), FROZEN_FRAMES);
       if (f.retired_token) {
         const prev = rsLastSlots.find((sl) => sl && sl.track_present && sl.track_token === f.retired_token && sl.x_mm != null);
         if (prev) rsRetired = { x: prev.x_mm, y: prev.y_mm, token: f.retired_token, reason: f.retired_reason, until: Date.now() + 3000 };
       }
+      const currentState=rsClient.currentState?.() || {};
+      const occupancy=currentState.occupancy ?? f.occupancy;
+      document.getElementById('rsOccupancy').textContent = occupancy == null
+        ? 'Room occupancy: unavailable in this firmware' : `Room: ${occupancy ? 'occupied' : 'vacant'}`;
+      renderZoneStates(f,currentState);
       rsLastSlots = f.slots || [];
-      const threshold = Number(document.getElementById('rsFrozen').value) || 50;
+      const threshold = FROZEN_FRAMES;
       const kinds = (f.slots || []).map((sl) => classifySlot(sl, { frozenThresholdFrames: threshold })).join(' ');
-      setRs(`live seq ${f.frame_sequence} tgen ${f.transform_generation} stream ${f.stream_state} - ${kinds}`);
+      document.getElementById('rsLiveStatus').textContent = `live seq ${f.frame_sequence} tgen ${f.transform_generation} stream ${f.stream_state} - ${kinds}`;
       draw();
     });
-    rsClient.onState((obj) => { if (obj.live_view != null) { rsLiveOn = obj.live_view === 'ON'; rsUpdateLiveBtn(); } });
+    rsClient.onState((obj) => {
+      if(connectionEpoch!==rsConnectionEpoch)return;
+      if(Object.hasOwn(obj,'live_frame'))renderZoneStates(obj.live_frame,rsClient.currentState?.() || {});
+      if (obj.stream_state && obj.stream_state !== 'ok')
+        document.getElementById('rsZoneStates').textContent='Zone state: unavailable while radar stream is interrupted';
+      if (obj.action) document.getElementById('rsLastEvent').textContent =
+        `${obj.action} · ${obj.spatial_id===0 || obj.spatial_id===255?'Room':(obj.spatial_name || `Zone ${obj.spatial_id}`)}`;
+      if (obj.occupancy != null) document.getElementById('rsOccupancy').textContent =
+        `Room: ${obj.occupancy ? 'occupied' : 'vacant'}`;
+      if (obj.live_view != null) { rsLiveOn = obj.live_view === 'ON'; if (!rsLiveOn) { rsFrame = null; yawWindow.reset(); } rsUpdateLiveBtn(); draw(); } });
     // Connect only proves the broker; the device is claimed by its own status read.
     const st = await rsClient.readStatus();
-    setRs(`connected - ${rsSummary(st)}`, 'ok');
+    await rsClient.readLayout(); // Learn converter identity without replacing the local draft.
+    if(connectionEpoch!==rsConnectionEpoch)return;
+    setRs(`connected - ${rsSummary(st)}. Read back layout before measuring yaw.`, 'ok');
   } catch (e) {
+    if(connectionEpoch!==rsConnectionEpoch)return;
     rsClient = null;
     setRs(`restart: ${e.message}`, 'err');
   }
@@ -2069,10 +1699,40 @@ document.getElementById('rsStatus').onclick = async () => {
   if (!rsClient) { setRs('restart: not connected', 'err'); return; }
   try { setRs(rsSummary(await rsClient.readStatus())); } catch (e) { setRs(`restart: ${e.message}`, 'err'); }
 };
+document.getElementById('rsSupply').onclick = async () => {
+  const result = document.getElementById('rsSupplyResult');
+  if (!rsClient) { result.textContent = 'Connect to the restart device first.'; return; }
+  result.textContent = 'Reading supply...';
+  try { result.textContent = JSON.stringify(await rsClient.readSupply(), null, 2); }
+  catch (e) { result.textContent = `Supply unavailable: ${e.message}`; }
+};
+document.getElementById('rsSupplyArmClear').onclick = () => {
+  const result = document.getElementById('rsSupplyResult');
+  if (!rsClient) { result.textContent = 'Connect to the restart device first.'; return; }
+  try {
+    rsClient.armSupplyClear();
+    result.textContent = 'Clear confirmation requested for 10 seconds. This erases the stored droop history. Press Confirm clear to proceed; calibration is kept.';
+  } catch (e) { result.textContent = e.message; }
+};
+document.getElementById('rsSupplyClear').onclick = () => {
+  const result = document.getElementById('rsSupplyResult');
+  if (!rsClient) { result.textContent = 'Connect to the restart device first.'; return; }
+  try {
+    rsClient.clearSupplyHistory();
+    result.textContent = 'History clear requested. Read supply again: clear status 2 = saved, 3 = failed. Check count 0, no deepest dip and unknown time since droop. Calibration is kept.';
+  } catch (e) { result.textContent = e.message; }
+};
+document.getElementById('rsSupplyCalibrate').onclick = () => {
+  const result = document.getElementById('rsSupplyResult');
+  if (!rsClient) { result.textContent = 'Connect to the restart device first.'; return; }
+  try {
+    rsClient.calibrateSupply(Number(document.getElementById('rsSupplyReference').value));
+    result.textContent = 'Calibration requested. Wait three seconds, then Read supply. Status 1 = pending, 2 = saved, 3 = failed; check the saved reference.';
+  } catch (e) { result.textContent = e.message; }
+};
 document.getElementById('rsWrite').onclick = async () => {
   if (!rsClient) { setRs('restart: not connected', 'err'); return; }
   const generation = Number(document.getElementById('rsGeneration').value) || 1;
-  const sensorHeightMm = Number(document.getElementById('rsSensorHeight').value) || 0;
   let blob;
   try {
     const restart = editorToRestart(appToLayout(), { generation, sensorHeightMm });
@@ -2081,10 +1741,15 @@ document.getElementById('rsWrite').onclick = async () => {
   const hash = (restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0');
   setRs(`writing generation ${generation} hash ${hash} ...`);
   try {
+    rsPoseEpoch++; rsPose = null; yawWindow.reset();
     const r = await rsClient.writeAndVerify(blob, {
       generation,
       onProgress: (p) => setRs(`generation ${generation} hash ${hash}: ${p.phase}${p.index ? ` ${p.index}/${p.total}` : ''}`),
     });
+    // rsPose is compared with the UI draft in Step 2, so store editor yaw.
+    const sent = restartToEditor(decodeRestartLayout(blob)).mount;
+    rsPose = { sensor: { x: sent.offsetXMm, y: sent.offsetYMm }, yaw: sent.yawDeciDeg, inverted: sent.inverted, boot: rsClient.currentState().boot_session, transform: r.transformGeneration, generation: r.generation, hash: r.hash };
+    rsFrame = null; yawWindow.reset();nameDevice=rsMarkerDevice;
     setRs(`device runs generation ${r.generation} hash ${r.hash} (transform generation ${r.transformGeneration}); read-back identical`, 'ok');
     document.getElementById('rsGeneration').value = generation + 1;
   } catch (e) {
@@ -2094,16 +1759,24 @@ document.getElementById('rsWrite').onclick = async () => {
 document.getElementById('rsReadBack').onclick = async () => {
   if (!rsClient) { setRs('restart: not connected', 'err'); return; }
   try {
+    rsPoseEpoch++; rsPose = null; yawWindow.reset();
+    const before = await rsClient.readStatus();
     const blob = await rsClient.readLayout({ onProgress: (p) => setRs(`reading ${p.index}/${p.total}`) });
     const restart = decodeRestartLayout(blob);
+    const after = await rsClient.readStatus();
+    if (before.boot_session !== after.boot_session || before.transform_generation !== after.transform_generation || restart.generation !== after.config_generation || (restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0') !== after.config_hash) throw new Error('Layout changed during read-back; retry');
     const editor = restartToEditor(restart);
-    const tool = { version: 3, sensor: { x: editor.mount.offsetXMm, y: editor.mount.offsetYMm, yawDeciDeg: editor.mount.yawDeciDeg,
-      inverted: editor.mount.inverted, heightMm: editor.mount.heightMm }, polys: {}, rects: {}, presenceStyles: [] };
+    const tool = { version: 4, restartMetadata:editor.restartMetadata, sensorHeightMm:editor.mount.sensorHeightMm, scattererHeightMm:editor.mount.scattererHeightMm, nameDevice:rsMarkerDevice,
+      roomName:nameDevice===rsMarkerDevice && sameRoomGeometry(polys.master,editor.master?.vertices)?roomName:'Room',
+      maskNames:editor.exclusions.map((r,n)=>nameDevice===rsMarkerDevice && sameMaskGeometry(rects['excl'+n],r)?maskNames[n]:`Mask ${n+1}`), doors: editor.doors, sensor: { x: editor.mount.offsetXMm, y: editor.mount.offsetYMm, yawDeciDeg: editor.mount.yawDeciDeg,
+      inverted: editor.mount.inverted, heightMm: editor.mount.heightMm }, polys: {}, rects: {}, presenceStyles: [], slotNames: [], slotPolicies: [], slotIds:[],slotStyleCodes:[],slotDetails:[] };
     if (editor.master) tool.polys.master = editor.master.vertices;
-    editor.presence.forEach((z, n) => { if (z) { tool.polys['pres' + n] = z.vertices; } tool.presenceStyles[n] = z ? z.style : OCCUPANCY_ZONE_STYLE.DEFAULT; });
+    editor.presence.forEach((z, n) => { if (z) { tool.polys['pres' + n] = z.vertices; } tool.presenceStyles[n] = z ? z.style : OCCUPANCY_ZONE_STYLE.DEFAULT; tool.slotNames[n] = z?.name ?? ''; tool.slotPolicies[n] = z?.policy ?? null;tool.slotIds[n]=z?.spatialId ?? null;tool.slotStyleCodes[n]=z?.styleCode ?? null;tool.slotDetails[n]=z?{boundaryRole:z.boundaryRole,reflectionProfile:z.reflectionProfile}:null; });
     editor.exclusions.forEach((r, n) => { if (r) tool.rects['excl' + n] = r; });
+    rsPose = { sensor: { x: editor.mount.offsetXMm, y: editor.mount.offsetYMm }, yaw: editor.mount.yawDeciDeg, inverted: editor.mount.inverted, boot: after.boot_session, transform: after.transform_generation, generation: restart.generation, hash: after.config_hash };
+    rsFrame = null;
     toolFromJSON(JSON.stringify(tool));
-    document.getElementById('rsSensorHeight').value = editor.mount.sensorHeightMm;
+    sensorHeightMm=editor.mount.sensorHeightMm;scattererHeightMm=editor.mount.scattererHeightMm;
     document.getElementById('rsGeneration').value = restart.generation + 1;
     setRs(`editor now shows the device's generation ${restart.generation} (hash ${(restartLayoutHash(blob) >>> 0).toString(16).padStart(8, '0')})`, 'ok');
   } catch (e) { setRs(`restart: ${e.message}`, 'err'); }
@@ -2112,9 +1785,12 @@ function rsUpdateLiveBtn() { document.getElementById('rsLive').textContent = `Li
 document.getElementById('rsLive').onclick = () => {
   if (!rsClient) { setRs('restart: not connected', 'err'); return; }
   rsLiveOn = !rsLiveOn; rsClient.setLiveView(rsLiveOn); rsUpdateLiveBtn();
-  if (!rsLiveOn) { rsFrame = null; draw(); }
+  if (!rsLiveOn) { rsFrame = null; yawWindow.reset(); draw(); }
   setRs(`live view ${rsLiveOn ? 'ON - the device turns it off itself after 15 min' : 'OFF'}`);
 };
+syncZoneButtons();
+resize();
+fitView();
 </script>
 </body>
 </html>

@@ -17,10 +17,11 @@
  * surfaced with the device's reason so the operator sees it.
  */
 
-import { LAYOUT_BYTES, layoutHash } from './layout_codec.js';
+import { LAYOUT_BYTES, LAYOUT_SCHEMA, layoutHash } from './layout_codec.js';
 
 export const CHUNK_BYTES = 48;
 export const DEFAULT_TIMEOUT_MS = 8000;
+export const SUPPLY_CLEAR_CONFIRM_MS = 10000; // 8 s request allowance + 2 s click allowance.
 /* Zigbee2MQTT serialises writes per device; pacing chunks keeps the write
  * queue short and gives the device's chunk queue (depth 6) room. */
 export const DEFAULT_CHUNK_INTERVAL_MS = 200;
@@ -50,22 +51,25 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
   const state = {};                 // last known device state, merged
   const stateListeners = new Set();
   const frameListeners = new Set();
-  const waiters = [];               // { predicate, resolve }
-  let lastFrameSeq = -1;
+  const waiters = [];               // { predicate, resolve, timer }
+  let lastFrame = null;
 
   transport.subscribe(stateTopic, (payload) => {
     let obj;
     try { obj = typeof payload === 'string' ? JSON.parse(payload) : JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
     Object.assign(state, obj);
     for (const l of stateListeners) l(obj, state);
-    /* One tick reaches the state topic twice (the live_tick report, then the
-     * live_frame read response); listeners get each frame once. */
-    if (obj.live_frame && obj.live_frame.frame_sequence !== lastFrameSeq) {
-      lastFrameSeq = obj.live_frame.frame_sequence;
-      for (const l of frameListeners) l(obj.live_frame);
+    /* Command 0x02 supplies live_frame directly. Z2M may re-carry that frame
+     * on unrelated cached-state updates. Identity comes from the frame itself:
+     * the top-level boot_session read may precede or follow a reboot's frame. */
+    const frame = obj.live_frame;
+    if (frame && (!lastFrame || frame.boot_session !== lastFrame.boot_session
+        || frame.frame_sequence !== lastFrame.frame_sequence)) {
+      lastFrame = { boot_session: frame.boot_session, frame_sequence: frame.frame_sequence };
+      for (const l of frameListeners) l(frame);
     }
     for (const w of waiters.slice()) {
-      if (w.predicate(state, obj)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(state); }
+      if (w.predicate(state, obj)) { clearTimeout(w.timer); waiters.splice(waiters.indexOf(w), 1); w.resolve({ ...state }); }
     }
   });
 
@@ -78,11 +82,11 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
 
   /** Resolve when the merged state satisfies predicate; reject on timeout. */
   function waitFor(predicate, what, ms = timeoutMs) {
-    if (predicate(state, {})) return Promise.resolve(state);
+    if (predicate(state, {})) return Promise.resolve({ ...state });
     return new Promise((resolve, reject) => {
-      const w = { predicate, resolve };
+      const w = { predicate, resolve, timer: null };
       waiters.push(w);
-      setTimeout(() => {
+      w.timer = setTimeout(() => {
         const i = waiters.indexOf(w);
         if (i >= 0) { waiters.splice(i, 1); reject(new Error(`timeout waiting for ${what}`)); }
       }, ms);
@@ -93,12 +97,57 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
   async function readStatus() {
     const keys = ['boot_session', 'interface_revision', 'config_generation', 'config_hash',
       'transform_generation', 'stream_state', 'config_state', 'config_reason', 'config_detail', 'config_offset', 'live_view'];
-    const before = state.boot_session;
-    delete state.config_state;
+    /* Each key is a separate converter read. Wait for the complete summary,
+     * including mode and rejection details, rather than the first state key.
+     * Cached MQTT state still cannot prove when each field was read. */
+    const frameBefore = lastFrame;
+    for (const key of keys) delete state[key];
     get(keys);
-    await waitFor((s) => s.config_state !== undefined, 'status read');
-    void before;
-    return { ...state };
+    const status = await waitFor((s) => {
+      if (!keys.every((key) => s[key] !== undefined)) return false;
+      if (s.live_view !== 'ON') return true;
+      // Live republishes can fill deleted keys with stale cached status.
+      // Require a distinct post-request frame and atomic pose agreement.
+      // Keep status authoritative and retain all read-back comparisons.
+      const f = s.live_frame;
+      return lastFrame !== frameBefore && f && f.boot_session === s.boot_session
+        && f.transform_generation === s.transform_generation;
+    }, 'status read (live pose agreement)');
+    return status;
+  }
+
+  /** Explicit Developer read only: never polled or added to readStatus().
+   * Null means unavailable; firmware values refresh internally within 500 ms.
+   * Z2M cached-state replay still limits per-field freshness. */
+  async function readSupply() {
+    const keys = ['supply_undervoltage_now', 'supply_undervoltage_since_boot', 'supply_minimum_since_boot_mv', 'supply_dip_count_since_boot', 'supply_mv', 'supply_deepest_mv', 'supply_droop_count',
+      'supply_since_droop_ms', 'supply_calibrated', 'supply_available',
+      'supply_gaps', 'supply_hardware_alerts', 'supply_persistence_errors',
+      'supply_gain_ppm', 'supply_reference_mv', 'supply_raw_average',
+      'supply_measured_mv', 'supply_cal_status', 'supply_deepest_duration_us', 'supply_clear_status'];
+    for (const key of keys) delete state[key];
+    get(keys);
+    await waitFor((s) => keys.every((key) => s[key] !== undefined), 'supply read');
+    return Object.fromEntries(keys.map((key) => [key, state[key]]));
+  }
+
+  let clearArmedUntil = 0;
+  function armSupplyClear() {
+    set({ supply_clear: 1 });
+    clearArmedUntil = Date.now() + SUPPLY_CLEAR_CONFIRM_MS;
+  }
+  function clearSupplyHistory() {
+    if (!clearArmedUntil || Date.now() >= clearArmedUntil) throw new Error('Arm history clear first; confirmation expires after 10 seconds');
+    clearArmedUntil = 0;
+    set({ supply_clear: 2 });
+    // Read supply_clear_status later; do not invent completion locally.
+  }
+
+  function calibrateSupply(referenceMv) {
+    if (!Number.isInteger(referenceMv) || referenceMv < 1000 || referenceMv > 6600)
+      throw new RangeError('reference must be 1000..6600 mV');
+    set({ supply_calibrate: referenceMv });
+    // Caller reads supply_cal_status: 1 pending, 2 durable success, 3 failed.
   }
 
   /**
@@ -114,8 +163,8 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
 
     onProgress({ phase: 'begin' });
     delete state.config_state;
-    set({ config_begin: { generation, length: LAYOUT_BYTES, hash, schema: 1 } });
-    let s = await waitFor((st) => st.config_state !== undefined, 'begin');
+    set({ config_begin: { generation, length: LAYOUT_BYTES, hash, schema: LAYOUT_SCHEMA } });
+    let s = await waitFor((st) => st.config_state === 'staging' || st.config_state === 'rejected', 'begin');
     if (s.config_state !== 'staging') throw new RestartRejected(s);
 
     const total = Math.ceil(LAYOUT_BYTES / CHUNK_BYTES);
@@ -149,12 +198,18 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
   }
 
   /** Read the active blob back through the windowed read attribute. */
-  async function readLayout({ onProgress = () => {} } = {}) {
+  let readTail=Promise.resolve();
+  function readLayout(opts={}) {
+    const operation=readTail.then(()=>readLayoutTransaction(opts));
+    readTail=operation.catch(()=>{});return operation;
+  }
+  async function readLayoutTransaction({ onProgress = () => {} } = {}) {
+    const before=await readStatus();
     const out = new Uint8Array(LAYOUT_BYTES);
     const total = Math.ceil(LAYOUT_BYTES / CHUNK_BYTES);
     /* A window is fresh only when its converter-side seq differs from the one
      * last seen: the state topic re-carries the previous window with every
-     * cached republish. Inequality, not ordering — the converter's counter
+     * cached republish. Inequality, not ordering â€” the converter's counter
      * restarts with Zigbee2MQTT while the cached state keeps the old value. */
     let lastSeq = state.config_read_window ? state.config_read_window.seq ?? null : null;
     for (let i = 0, off = 0; off < LAYOUT_BYTES; i++, off += CHUNK_BYTES) {
@@ -169,6 +224,10 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
       out.set(bytes.subarray(0, n), off);
       onProgress({ phase: 'read', index: i + 1, total });
     }
+    const after=await readStatus();
+    if(before.boot_session!==after.boot_session || before.transform_generation!==after.transform_generation || before.config_generation!==after.config_generation || before.config_hash!==after.config_hash
+      || new DataView(out.buffer).getUint32(4,true)!==after.config_generation
+      || (layoutHash(out)>>>0).toString(16).padStart(8,'0')!==after.config_hash)throw new Error('Layout changed during read-back');
     return out;
   }
 
@@ -187,7 +246,7 @@ export function createRestartClient({ transport, device, baseTopic = 'zigbee2mqt
   function onState(cb) { stateListeners.add(cb); return () => stateListeners.delete(cb); }
   function currentState() { return { ...state }; }
 
-  return { readStatus, writeLayout, readLayout, writeAndVerify, setLiveView, onLiveFrame, onState, currentState,
+  return { readStatus, readSupply, calibrateSupply, armSupplyClear, clearSupplyHistory, writeLayout, readLayout, writeAndVerify, setLiveView, onLiveFrame, onState, currentState,
     topics: { setTopic, getTopic, stateTopic } };
 }
 
